@@ -14,6 +14,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from ri_analyzer.fetchers.cost_explorer import RiCoverageRecord
+from ri_analyzer.analyzers.utilization import _parse_instance_family, _norm_factor
 
 
 @dataclass
@@ -25,6 +26,22 @@ class CoverageSummary:
     covered_hours: float
     on_demand_hours: float
     total_hours: float
+
+    @property
+    def norm_factor(self) -> float:
+        return _norm_factor(self.instance_type)
+
+    @property
+    def covered_nus(self) -> float:
+        return self.covered_hours * self.norm_factor
+
+    @property
+    def on_demand_nus(self) -> float:
+        return self.on_demand_hours * self.norm_factor
+
+    @property
+    def total_nus(self) -> float:
+        return self.total_hours * self.norm_factor
 
     @property
     def coverage_pct(self) -> float:
@@ -70,5 +87,8 @@ def analyze(records: list[RiCoverageRecord]) -> list[CoverageSummary]:
         for key, v in agg.items()
     ]
 
-    # オンデマンド時間が多い順（= カバレッジ不足が深刻な順）
-    return sorted(summaries, key=lambda s: (-s.on_demand_hours, s.account_id))
+    # instance family → サイズ（norm_factor 昇順）→ account_id
+    return sorted(
+        summaries,
+        key=lambda s: (_parse_instance_family(s.instance_type), s.norm_factor, s.account_id),
+    )

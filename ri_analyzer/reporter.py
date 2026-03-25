@@ -98,29 +98,64 @@ def print_coverage(summaries: list[CoverageSummary], max_coverage: float | None 
         print("\n  No data.")
         return
 
+    col_header = (
+        f"\n  {'Account ID':<14}  {'Instance Type':<20}"
+        f"  {'Coverage':>9}  {'RI hrs':>9}  {'OD hrs':>9}  {'Total hrs':>10}"
+    )
+    col_sep = f"  {'-' * 80}"
+
+    # instance family ごとにグループ化
+    families: list[str] = []
+    seen_families: set[str] = set()
+    for s in summaries:
+        fam = _parse_instance_family(s.instance_type)
+        if fam not in seen_families:
+            families.append(fam)
+            seen_families.add(fam)
+
+    for family in families:
+        fam_group = [s for s in summaries if _parse_instance_family(s.instance_type) == family]
+        print(f"\n  [db.{family}.*]")
+        print(col_header)
+        print(col_sep)
+
+        for s in fam_group:
+            if s.status == "ok":
+                pct_str = _c(f"{s.coverage_pct:8.1f}%", _GREEN)
+            elif s.status == "warning":
+                pct_str = _c(f"{s.coverage_pct:8.1f}%", _YELLOW)
+            else:
+                pct_str = _c(f"{s.coverage_pct:8.1f}%", _RED)
+
+            print(
+                f"  {s.account_id:<14}  {s.instance_type:<20}"
+                f"  {pct_str}  {s.covered_hours:>9.1f}  {s.on_demand_hours:>9.1f}  {s.total_hours:>10.1f}"
+            )
+
+        # family サマリ行（2件以上の場合のみ）
+        if len(fam_group) >= 2:
+            total_covered_nus  = sum(s.covered_nus for s in fam_group)
+            total_od_nus       = sum(s.on_demand_nus for s in fam_group)
+            total_nus          = sum(s.total_nus for s in fam_group)
+            cov_pct = (total_covered_nus / total_nus * 100) if total_nus > 0 else 0.0
+            if cov_pct >= 90:
+                pct_str = _c(f"{cov_pct:8.1f}%", _GREEN)
+            elif cov_pct >= 50:
+                pct_str = _c(f"{cov_pct:8.1f}%", _YELLOW)
+            else:
+                pct_str = _c(f"{cov_pct:8.1f}%", _RED)
+            print(
+                _c(
+                    f"  {'(total)':<14}  {'db.' + family + '.*':<20}"
+                    f"  {cov_pct:8.1f}%  {total_covered_nus:>8.1f}N  {total_od_nus:>8.1f}N  {total_nus:>9.1f}N",
+                    _CYAN,
+                )
+            )
+
+    # フッター統計
     low     = [s for s in summaries if s.status == "low"]
     warning = [s for s in summaries if s.status == "warning"]
     ok      = [s for s in summaries if s.status == "ok"]
-
-    print(
-        f"\n  {'Account ID':<14}  {'Region':<16}  {'Instance Type':<20}"
-        f"  {'Coverage':>9}  {'RI hrs':>9}  {'OD hrs':>9}  {'Total hrs':>10}"
-    )
-    print(f"  {'-' * 96}")
-
-    for s in summaries:
-        if s.status == "ok":
-            pct_str = _c(f"{s.coverage_pct:8.1f}%", _GREEN)
-        elif s.status == "warning":
-            pct_str = _c(f"{s.coverage_pct:8.1f}%", _YELLOW)
-        else:
-            pct_str = _c(f"{s.coverage_pct:8.1f}%", _RED)
-
-        print(
-            f"  {s.account_id:<14}  {s.region:<16}  {s.instance_type:<20}"
-            f"  {pct_str}  {s.covered_hours:>9.1f}  {s.on_demand_hours:>9.1f}  {s.total_hours:>10.1f}"
-        )
-
     print()
     if low:
         total_od = sum(s.on_demand_hours for s in low)

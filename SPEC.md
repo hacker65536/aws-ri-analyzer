@@ -67,6 +67,8 @@ pyyaml>=6.0
 ```yaml
 payer:
   account_id: "123456789012"   # Payer (management) account ID
+  # profile: "my-payer-profile"  # Optional. Omit to auto-resolve (AWS SSO only).
+                                  # Specify for access keys / AssumeRole / non-SSO profiles.
 
 analysis:
   services:                    # 対象サービス（省略時は初回起動でインタラクティブ選択 → 自動保存）
@@ -110,9 +112,17 @@ CLI 引数  >  config.yaml の値  >  インタラクティブプロンプト（
 
 ## AWS 認証・プロファイル解決
 
-### プロファイル命名規則
+### プロファイル優先度
 
-AWS SSO で発行されるプロファイル名の規則：
+```
+config.yaml の payer.profile  >  profile_resolver による自動解決（AWS SSO のみ）
+```
+
+`payer.profile` を明示すれば、アクセスキー・AssumeRole・非 SSO プロファイルでも動作する。
+
+### 自動解決（AWS SSO）の命名規則
+
+AWS SSO (IAM Identity Center) で発行されるプロファイル名の規則：
 
 ```
 awssso-{account_name}-{account_id}:AWSReadOnlyAccess
@@ -130,6 +140,18 @@ awssso-{account_name}-{account_id}:AWSReadOnlyAccess
 ```python
 resolve_profile(account_id="123456789012")
 # → "awssso-my-org-payer-123456789012:AWSReadOnlyAccess"
+```
+
+### SSO セッション切れのエラーハンドリング
+
+AWS SSO のトークン切れ（`TokenRetrievalError` / `SSOTokenLoadError`）を検知し、
+ログインコマンドを表示して終了する：
+
+```
+[ERROR] AWS SSO session has expired.
+  Run the following command to log in again:
+
+    aws sso login --profile "awssso-my-org-payer-123456789012:AWSReadOnlyAccess"
 ```
 
 ---
@@ -235,13 +257,24 @@ start = end - lookback_days
 ### `analyzers/coverage.py`
 
 `RiCoverageRecord` を `(account_id, region, instance_type)` キーで集計し、
-`CoverageSummary` に変換。オンデマンド時間が多い順にソートして返す。
+`CoverageSummary` に変換。
 
 | ステータス | カバレッジ率 |
 |---|---|
 | ok | >= 90% |
 | warning | 50% 〜 90% |
 | low | < 50% |
+
+ソート順: instance family → サイズ（norm_factor 昇順）→ account_id
+
+#### 正規化ユニット（Normalized Units）
+
+`utilization.py` の `_NORM_FACTOR` / `_norm_factor()` を共有して使用。
+
+- `CoverageSummary.covered_nus` = `covered_hours × norm_factor`
+- `CoverageSummary.on_demand_nus` = `on_demand_hours × norm_factor`
+- `CoverageSummary.total_nus` = `total_hours × norm_factor`
+- family サマリの Coverage% は NUs 加重平均で算出
 
 ---
 
@@ -281,7 +314,10 @@ nano=0.25 / micro=0.5 / small=1 / medium=2 / large=4 / xlarge=8 / 2xlarge=16 / .
   - `show_sub_id=True` で Subscription ID 列を追加表示
   - instance family 単位でサマリ行を表示（2件以上の場合）
   - 詳細行の `Unused` 列は `hrs` 単位、サマリ行は `NUs` 単位（正規化ユニット時間）
-- `print_coverage(summaries, max_coverage=None)` — `max_coverage` 指定時は coverage_pct がその値以下のレコードのみ表示
+- `print_coverage(summaries, max_coverage=None)`
+  - `max_coverage` 指定時は coverage_pct がその値以下のレコードのみ表示
+  - instance family 単位でグループ化し、2件以上の場合はサマリ行を表示（NUs 加重 Coverage%）
+  - 詳細行は時間単位（hrs）、サマリ行は NUs 単位（`N` サフィックス）
 
 ---
 

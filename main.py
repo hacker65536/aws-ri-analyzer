@@ -17,6 +17,8 @@ import argparse
 import sys
 from datetime import datetime
 
+from botocore.exceptions import TokenRetrievalError, SSOTokenLoadError
+
 from ri_analyzer.config import Config
 from ri_analyzer.profile_resolver import resolve_profile
 from ri_analyzer.fetchers.cost_explorer import fetch_ri_subscriptions, fetch_ri_coverage, _ce_time_period
@@ -47,6 +49,13 @@ def _prompt_multiselect(label: str, choices: list[str]) -> list[str]:
         except (ValueError, IndexError):
             pass
         print("  Invalid input. Try again.")
+
+
+def _sso_expired_error(profile: str) -> None:
+    print("\n[ERROR] AWS SSO session has expired.", file=sys.stderr)
+    print(f"  Run the following command to log in again:\n", file=sys.stderr)
+    print(f"    aws sso login --profile \"{profile}\"", file=sys.stderr)
+    sys.exit(1)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -136,11 +145,14 @@ def main() -> None:
     if args.max_coverage is not None:
         print(f"  Filter        : coverage <= {args.max_coverage}%")
 
-    try:
-        payer_profile = resolve_profile(account_id=cfg.payer.account_id)
-    except ValueError as e:
-        print(f"[ERROR] Failed to resolve payer profile:\n  {e}", file=sys.stderr)
-        sys.exit(1)
+    if cfg.payer.profile:
+        payer_profile = cfg.payer.profile
+    else:
+        try:
+            payer_profile = resolve_profile(account_id=cfg.payer.account_id)
+        except ValueError as e:
+            print(f"[ERROR] Failed to resolve payer profile:\n  {e}", file=sys.stderr)
+            sys.exit(1)
 
     print(f"  Payer profile : {payer_profile}")
 
@@ -161,6 +173,8 @@ def main() -> None:
                 service=svc,
                 lookback_days=cfg.analysis.lookback_days,
             )
+        except (TokenRetrievalError, SSOTokenLoadError):
+            _sso_expired_error(payer_profile)
         except PermissionError as e:
             print(f"\n[ERROR] {e}", file=sys.stderr)
             sys.exit(1)
@@ -177,6 +191,8 @@ def main() -> None:
                     service=svc,
                     lookback_days=cfg.analysis.lookback_days,
                 )
+            except (TokenRetrievalError, SSOTokenLoadError):
+                _sso_expired_error(payer_profile)
             except PermissionError as e:
                 print(f"\n  [WARN] Skipped coverage: {e}")
             print(f" {len(coverage_records)} record(s)")

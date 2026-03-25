@@ -1,5 +1,8 @@
 payer:
-  account_id: "123456789012"   # Payer (management) account ID. Profile is resolved automatically.
+  account_id: "123456789012"   # Payer (management) account ID.
+  # profile: "my-payer-profile"  # Optional. If omitted, resolved automatically from ~/.aws/config
+                                  # using the account_id (AWS SSO / IAM Identity Center naming convention).
+                                  # Specify explicitly when using access keys, AssumeRole, or non-SSO profiles.
 
 analysis:
   services:

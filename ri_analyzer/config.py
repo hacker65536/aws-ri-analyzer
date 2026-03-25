@@ -14,6 +14,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 @dataclass
 class PayerConfig:
     account_id: str
+    profile: Optional[str] = None   # 省略時は profile_resolver で自動解決
 
 
 @dataclass
@@ -46,7 +47,10 @@ class Config:
 
         analysis_raw = raw.get("analysis", {})
         cfg = cls(
-            payer=PayerConfig(account_id=str(payer_raw["account_id"])),
+            payer=PayerConfig(
+                account_id=str(payer_raw["account_id"]),
+                profile=payer_raw.get("profile") or None,
+            ),
             analysis=AnalysisConfig(
                 services=analysis_raw.get("services") or None,
                 sections=analysis_raw.get("sections") or None,
@@ -60,10 +64,11 @@ class Config:
 
     def save(self, path: str | Path | None = None) -> None:
         config_path = Path(path) if path else self._path
+        payer_data: dict = {"account_id": self.payer.account_id}
+        if self.payer.profile:
+            payer_data["profile"] = self.payer.profile
         data = {
-            "payer": {
-                "account_id": self.payer.account_id,
-            },
+            "payer": payer_data,
             "analysis": {
                 "services": self.analysis.services,
                 "sections": self.analysis.sections,
