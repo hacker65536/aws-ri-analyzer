@@ -1,0 +1,20 @@
+# Config (contains account IDs)
+config.yaml
+
+# Dev notes
+HANDOFF.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
