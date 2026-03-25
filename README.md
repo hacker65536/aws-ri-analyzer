@@ -42,6 +42,7 @@ python main.py --no-color > output.log
 | `--section SECTION [...]` | 表示セクション（expiration / coverage / utilization）複数指定可 |
 | `--max-util PCT` | 利用率が PCT% 以下のサブスクリプションのみ表示 |
 | `--max-coverage PCT` | カバレッジが PCT% 以下のグループのみ表示 |
+| `--show-sub-id` | Utilization テーブルに Subscription ID 列を表示 |
 | `--no-color` | カラー出力を無効化 |
 | `--config PATH` | 設定ファイルのパス（デフォルト: config.yaml） |
 

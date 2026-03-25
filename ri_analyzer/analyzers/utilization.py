@@ -7,6 +7,41 @@ from dataclasses import dataclass
 
 from ri_analyzer.fetchers.cost_explorer import RiUtilizationRecord
 
+# AWS 正規化ユニット係数テーブル（RDS / ElastiCache 共通）
+_NORM_FACTOR: dict[str, float] = {
+    "nano":     0.25,
+    "micro":    0.5,
+    "small":    1,
+    "medium":   2,
+    "large":    4,
+    "xlarge":   8,
+    "2xlarge":  16,
+    "4xlarge":  32,
+    "8xlarge":  64,
+    "10xlarge": 80,
+    "12xlarge": 96,
+    "16xlarge": 128,
+    "24xlarge": 192,
+    "32xlarge": 256,
+}
+
+
+def _parse_instance_family(instance_type: str) -> str:
+    """'db.r5.large' → 'r5'"""
+    parts = instance_type.split(".")
+    return parts[1] if len(parts) >= 3 else instance_type
+
+
+def _parse_instance_size(instance_type: str) -> str:
+    """'db.r5.large' → 'large'"""
+    parts = instance_type.split(".")
+    return parts[2] if len(parts) >= 3 else ""
+
+
+def _norm_factor(instance_type: str) -> float:
+    size = _parse_instance_size(instance_type)
+    return _NORM_FACTOR.get(size, 1.0)
+
 
 @dataclass
 class UtilizationSummary:
@@ -22,6 +57,16 @@ class UtilizationSummary:
         if not self.periods:
             return 0.0
         return sum(p.utilization_pct for p in self.periods) / len(self.periods)
+
+    @property
+    def count(self) -> int:
+        """RI インスタンス個数（最初の期間の値を使用）"""
+        return self.periods[0].count if self.periods else 0
+
+    @property
+    def normalized_units(self) -> float:
+        """count × 正規化係数（例: db.r5.large x10 → 10 × 4 = 40）"""
+        return self.count * _norm_factor(self.instance_type)
 
     @property
     def total_unused_hours(self) -> float:
@@ -80,4 +125,7 @@ def summarize(records: list[RiUtilizationRecord]) -> list[UtilizationSummary]:
             periods         = sorted(periods, key=lambda r: r.period_start),
         ))
 
-    return sorted(summaries, key=lambda s: s.avg_utilization_pct)
+    return sorted(
+        summaries,
+        key=lambda s: (_parse_instance_family(s.instance_type), _norm_factor(s.instance_type)),
+    )

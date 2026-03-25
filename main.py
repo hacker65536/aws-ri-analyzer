@@ -83,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show only coverage groups with coverage <= PCT%%",
     )
     p.add_argument("--no-color", action="store_true", help="Disable colored output")
+    p.add_argument("--show-sub-id", action="store_true", help="Show subscription ID column in utilization table")
     return p
 
 
@@ -194,7 +195,7 @@ def main() -> None:
 
         if "utilization" in sections:
             summaries = util_analyzer.summarize(util_records)
-            reporter.print_utilization(summaries, max_util=args.max_util)
+            reporter.print_utilization(summaries, max_util=args.max_util, show_sub_id=args.show_sub_id)
 
     print()
 

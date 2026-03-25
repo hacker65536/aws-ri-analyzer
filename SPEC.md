@@ -256,6 +256,19 @@ start = end - lookback_days
 | warning | 50% 〜 80% |
 | low | < 50% |
 
+ソート順: instance family（`db.r5.large` → `r5`）→ サイズ（正規化ユニット昇順）
+
+#### 正規化ユニット（Normalized Units）
+
+AWS 標準の係数テーブル（`_NORM_FACTOR`）を使い、インスタンスサイズから NUs を算出。
+
+```
+nano=0.25 / micro=0.5 / small=1 / medium=2 / large=4 / xlarge=8 / 2xlarge=16 / ...
+```
+
+- `UtilizationSummary.normalized_units` = `count × 係数`（例: `db.r5.large x10` → 40 NUs）
+- family サマリの `Avg Util` は NUs 加重平均で算出
+
 ---
 
 ### `reporter.py`
@@ -263,7 +276,11 @@ start = end - lookback_days
 - カラー出力（ANSI）。`--no-color` または `set_color(False)` で無効化
 - ファイル出力時は `--no-color` を推奨（ANSI コードが混入するため）
 - カラム幅は ASCII 文字で固定しているため日本語文字列はカラムがずれる
-- `print_utilization(summaries, max_util=None)` — `max_util` 指定時は avg_utilization_pct がその値以下のレコードのみ表示
+- `print_utilization(summaries, max_util=None, show_sub_id=False)`
+  - `max_util` 指定時は avg_utilization_pct がその値以下のレコードのみ表示
+  - `show_sub_id=True` で Subscription ID 列を追加表示
+  - instance family 単位でサマリ行を表示（2件以上の場合）
+  - 詳細行の `Unused` 列は `hrs` 単位、サマリ行は `NUs` 単位（正規化ユニット時間）
 - `print_coverage(summaries, max_coverage=None)` — `max_coverage` 指定時は coverage_pct がその値以下のレコードのみ表示
 
 ---

@@ -89,6 +89,7 @@ class RiUtilizationRecord:
     instance_type: str
     region: str
     platform: str               # Aurora / MySQL / PostgreSQL ...
+    count: int                  # numberOfInstances
     utilization_pct: float
     purchased_hours: float
     used_hours: float
@@ -178,6 +179,7 @@ def fetch_ri_subscriptions(
                 instance_type         = attrs.get("instanceType", ""),
                 region                = attrs.get("region", ""),
                 platform              = attrs.get("platform", ""),
+                count                 = int(attrs.get("numberOfInstances", 0)),
                 utilization_pct       = float(util.get("UtilizationPercentage", 0)),
                 purchased_hours       = float(util.get("PurchasedHours", 0)),
                 used_hours            = float(util.get("TotalActualHours", 0)),

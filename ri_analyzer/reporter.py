@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ri_analyzer.analyzers.expiration import ExpirationResult
 from ri_analyzer.analyzers.coverage import CoverageSummary
-from ri_analyzer.analyzers.utilization import UtilizationSummary
+from ri_analyzer.analyzers.utilization import UtilizationSummary, _parse_instance_family, _norm_factor
 
 _RED    = "\033[91m"
 _YELLOW = "\033[93m"
@@ -136,7 +136,11 @@ def print_coverage(summaries: list[CoverageSummary], max_coverage: float | None 
 # Utilization
 # ──────────────────────────────────────────────
 
-def print_utilization(summaries: list[UtilizationSummary], max_util: float | None = None) -> None:
+def print_utilization(
+    summaries: list[UtilizationSummary],
+    max_util: float | None = None,
+    show_sub_id: bool = False,
+) -> None:
     title = "RI Utilization  (Cost Explorer)"
     if max_util is not None:
         title += f"  [filter: util <= {max_util}%]"
@@ -149,12 +153,14 @@ def print_utilization(summaries: list[UtilizationSummary], max_util: float | Non
         print("\n  No data.")
         return
 
+    sub_id_col = f"{'Subscription ID':<16}  " if show_sub_id else ""
     col_header = (
-        f"  {'Subscription ID':<16}  {'Instance Type':<20}"
-        f"  {'Region':<16}  {'Avg Util':>9}  {'Unused hrs':>11}"
+        f"  {sub_id_col}{'Instance Type':<20}  {'Cnt':>3}  {'NUs':>6}"
+        f"  {'Region':<16}  {'Avg Util':>9}  {'Unused':>11}"
         f"  {'OD Cost':>10}  {'RI Cost':>10}  {'Net Savings':>12}  {'Judge':>5}"
     )
-    col_sep = f"  {'-' * 118}"
+    sep_width = 124 + (18 if show_sub_id else 0)
+    col_sep = f"  {'-' * sep_width}"
 
     # platform ごとにグループ化（出現順を保持しつつ重複排除）
     platforms: list[str] = []
@@ -169,25 +175,60 @@ def print_utilization(summaries: list[UtilizationSummary], max_util: float | Non
         print(f"\n  [{platform}]")
         print(col_header)
         print(col_sep)
+
+        # family ごとにまとめて出力
+        families: list[str] = []
+        seen_families: set[str] = set()
         for s in group:
-            pct = s.avg_utilization_pct
-            if s.status == "ok":
-                pct_str = _c(f"{pct:8.1f}%", _GREEN)
-            elif s.status == "warning":
-                pct_str = _c(f"{pct:8.1f}%", _YELLOW)
-            else:
-                pct_str = _c(f"{pct:8.1f}%", _RED)
+            fam = _parse_instance_family(s.instance_type)
+            if fam not in seen_families:
+                families.append(fam)
+                seen_families.add(fam)
 
-            if s.savings_status == "saving":
-                savings_str = _c(f"{s.total_net_savings:>12.2f}", _GREEN)
-                judge_str   = _c("  [+]", _GREEN)
-            else:
-                savings_str = _c(f"{s.total_net_savings:>12.2f}", _RED)
-                judge_str   = _c("  [-]", _RED)
+        for family in families:
+            fam_group = [s for s in group if _parse_instance_family(s.instance_type) == family]
 
-            print(
-                f"  {s.subscription_id:<16}  {s.instance_type:<20}"
-                f"  {s.region:<16}  {pct_str}  {s.total_unused_hours:>11.1f}"
-                f"  {s.total_on_demand_cost:>10.2f}  {s.total_amortized_fee:>10.2f}"
-                f"  {savings_str}{judge_str}"
-            )
+            for s in fam_group:
+                pct = s.avg_utilization_pct
+                if s.status == "ok":
+                    pct_str = _c(f"{pct:8.1f}%", _GREEN)
+                elif s.status == "warning":
+                    pct_str = _c(f"{pct:8.1f}%", _YELLOW)
+                else:
+                    pct_str = _c(f"{pct:8.1f}%", _RED)
+
+                if s.savings_status == "saving":
+                    savings_str = _c(f"{s.total_net_savings:>12.2f}", _GREEN)
+                    judge_str   = _c("  [+]", _GREEN)
+                else:
+                    savings_str = _c(f"{s.total_net_savings:>12.2f}", _RED)
+                    judge_str   = _c("  [-]", _RED)
+
+                sub_id_part = f"{s.subscription_id:<16}  " if show_sub_id else ""
+                print(
+                    f"  {sub_id_part}{s.instance_type:<20}  {s.count:>3}  {s.normalized_units:>6.1f}"
+                    f"  {s.region:<16}  {pct_str}  {s.total_unused_hours:>7.1f} hrs"
+                    f"  {s.total_on_demand_cost:>10.2f}  {s.total_amortized_fee:>10.2f}"
+                    f"  {savings_str}{judge_str}"
+                )
+
+            # family サマリ行（2件以上の場合のみ表示）
+            if len(fam_group) >= 2:
+                total_nus     = sum(s.normalized_units for s in fam_group)
+                unused_nus    = sum(s.total_unused_hours * _norm_factor(s.instance_type) for s in fam_group)
+                total_od      = sum(s.total_on_demand_cost for s in fam_group)
+                total_ri      = sum(s.total_amortized_fee for s in fam_group)
+                total_sav     = sum(s.total_net_savings for s in fam_group)
+                avg_pct       = (
+                    sum(s.avg_utilization_pct * s.normalized_units for s in fam_group)
+                    / total_nus
+                ) if total_nus > 0 else 0.0
+                sub_id_pad = " " * 18 if show_sub_id else ""
+                print(
+                    _c(
+                        f"  {sub_id_pad}{'db.' + family + '.*':<20}    -  {total_nus:>6.1f}"
+                        f"  {'(total)':<16}  {avg_pct:>8.1f}%  {unused_nus:>7.1f} NUs"
+                        f"  {total_od:>10.2f}  {total_ri:>10.2f}  {total_sav:>12.2f}",
+                        _CYAN,
+                    )
+                )
