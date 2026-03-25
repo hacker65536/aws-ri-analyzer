@@ -28,3 +28,7 @@ analysis:
 
   # RI expiration warning threshold (days)
   expiration_warn_days: 90
+
+  # Cache TTL in hours for AWS API responses (default: 24).
+  # Use --no-cache flag to bypass cache and force fresh data.
+  cache_ttl_hours: 24

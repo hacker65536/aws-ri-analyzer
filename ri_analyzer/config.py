@@ -24,6 +24,7 @@ class AnalysisConfig:
     regions: List[str]
     lookback_days: int = 7
     expiration_warn_days: int = 90
+    cache_ttl_hours: float = 24.0
 
 
 @dataclass
@@ -57,6 +58,7 @@ class Config:
                 regions=analysis_raw.get("regions", ["ap-northeast-1"]),
                 lookback_days=analysis_raw.get("lookback_days", 7),
                 expiration_warn_days=analysis_raw.get("expiration_warn_days", 90),
+                cache_ttl_hours=float(analysis_raw.get("cache_ttl_hours", 24.0)),
             ),
         )
         cfg._path = config_path
@@ -75,6 +77,7 @@ class Config:
                 "regions": self.analysis.regions,
                 "lookback_days": self.analysis.lookback_days,
                 "expiration_warn_days": self.analysis.expiration_warn_days,
+                "cache_ttl_hours": self.analysis.cache_ttl_hours,
             },
         }
         with open(config_path, "w") as f:

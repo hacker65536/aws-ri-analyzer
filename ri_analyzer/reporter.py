@@ -85,72 +85,100 @@ def print_expiration(
 # Coverage
 # ──────────────────────────────────────────────
 
-def print_coverage(summaries: list[CoverageSummary], max_coverage: float | None = None) -> None:
+def print_coverage(
+    summaries: list[CoverageSummary],
+    max_coverage: float | None = None,
+    engines: list[str] | None = None,
+    families: list[str] | None = None,
+) -> None:
     title = "RI Coverage  (reserved vs on-demand hours)"
     if max_coverage is not None:
         title += f"  [filter: coverage <= {max_coverage}%]"
+    if engines:
+        title += f"  [engine: {', '.join(engines)}]"
+    if families:
+        title += f"  [family: {', '.join(families)}]"
     _header(title)
 
     if max_coverage is not None:
         summaries = [s for s in summaries if s.coverage_pct <= max_coverage]
+    if engines:
+        engines_lower = [e.lower() for e in engines]
+        summaries = [s for s in summaries if any(e in s.platform.lower() for e in engines_lower)]
+    if families:
+        summaries = [s for s in summaries if _parse_instance_family(s.instance_type) in families]
 
     if not summaries:
         print("\n  No data.")
         return
 
     col_header = (
-        f"\n  {'Account ID':<14}  {'Instance Type':<20}"
-        f"  {'Coverage':>9}  {'RI hrs':>9}  {'OD hrs':>9}  {'Total hrs':>10}"
+        f"\n  {'Account ID':<14}  {'Instance Type':<20}  {'Region':<16}"
+        f"  {'Coverage':>9}  {'RI (hrs)':>9}  {'OD (hrs)':>9}  {'Total (hrs)':>12}"
     )
-    col_sep = f"  {'-' * 80}"
+    col_sep = f"  {'-' * 99}"
 
-    # instance family ごとにグループ化
-    families: list[str] = []
-    seen_families: set[str] = set()
+    # platform ごとにグループ化（出現順を保持しつつ重複排除）
+    platforms: list[str] = []
+    seen_platforms: set[str] = set()
     for s in summaries:
-        fam = _parse_instance_family(s.instance_type)
-        if fam not in seen_families:
-            families.append(fam)
-            seen_families.add(fam)
+        if s.platform not in seen_platforms:
+            platforms.append(s.platform)
+            seen_platforms.add(s.platform)
 
-    for family in families:
-        fam_group = [s for s in summaries if _parse_instance_family(s.instance_type) == family]
-        print(f"\n  [db.{family}.*]")
-        print(col_header)
-        print(col_sep)
+    for platform in platforms:
+        plat_group = [s for s in summaries if s.platform == platform]
+        print()
+        print(_c(f"  ## {platform}", _BOLD))
+        print(_c(f"  {'─' * 60}", _CYAN))
 
-        for s in fam_group:
-            if s.status == "ok":
-                pct_str = _c(f"{s.coverage_pct:8.1f}%", _GREEN)
-            elif s.status == "warning":
-                pct_str = _c(f"{s.coverage_pct:8.1f}%", _YELLOW)
-            else:
-                pct_str = _c(f"{s.coverage_pct:8.1f}%", _RED)
+        # instance family ごとにグループ化
+        families: list[str] = []
+        seen_families: set[str] = set()
+        for s in plat_group:
+            fam = _parse_instance_family(s.instance_type)
+            if fam not in seen_families:
+                families.append(fam)
+                seen_families.add(fam)
 
-            print(
-                f"  {s.account_id:<14}  {s.instance_type:<20}"
-                f"  {pct_str}  {s.covered_hours:>9.1f}  {s.on_demand_hours:>9.1f}  {s.total_hours:>10.1f}"
-            )
+        for family in families:
+            fam_group = [s for s in plat_group if _parse_instance_family(s.instance_type) == family]
+            print(f"\n  [db.{family}.*]")
+            print(col_header)
+            print(col_sep)
 
-        # family サマリ行（2件以上の場合のみ）
-        if len(fam_group) >= 2:
-            total_covered_nus  = sum(s.covered_nus for s in fam_group)
-            total_od_nus       = sum(s.on_demand_nus for s in fam_group)
-            total_nus          = sum(s.total_nus for s in fam_group)
-            cov_pct = (total_covered_nus / total_nus * 100) if total_nus > 0 else 0.0
-            if cov_pct >= 90:
-                pct_str = _c(f"{cov_pct:8.1f}%", _GREEN)
-            elif cov_pct >= 50:
-                pct_str = _c(f"{cov_pct:8.1f}%", _YELLOW)
-            else:
-                pct_str = _c(f"{cov_pct:8.1f}%", _RED)
-            print(
-                _c(
-                    f"  {'(total)':<14}  {'db.' + family + '.*':<20}"
-                    f"  {cov_pct:8.1f}%  {total_covered_nus:>8.1f}N  {total_od_nus:>8.1f}N  {total_nus:>9.1f}N",
-                    _CYAN,
+            for s in fam_group:
+                if s.status == "ok":
+                    pct_str = _c(f"{s.coverage_pct:8.1f}%", _GREEN)
+                elif s.status == "warning":
+                    pct_str = _c(f"{s.coverage_pct:8.1f}%", _YELLOW)
+                else:
+                    pct_str = _c(f"{s.coverage_pct:8.1f}%", _RED)
+
+                print(
+                    f"  {s.account_id:<14}  {s.instance_type:<20}  {s.region:<16}"
+                    f"  {pct_str}  {s.covered_hours:>9.1f}  {s.on_demand_hours:>9.1f}  {s.total_hours:>10.1f}"
                 )
-            )
+
+            # family サマリ行（2件以上の場合のみ）
+            if len(fam_group) >= 2:
+                total_covered_nus  = sum(s.covered_nus for s in fam_group)
+                total_od_nus       = sum(s.on_demand_nus for s in fam_group)
+                total_nus          = sum(s.total_nus for s in fam_group)
+                cov_pct = (total_covered_nus / total_nus * 100) if total_nus > 0 else 0.0
+                if cov_pct >= 90:
+                    pct_str = _c(f"{cov_pct:8.1f}%", _GREEN)
+                elif cov_pct >= 50:
+                    pct_str = _c(f"{cov_pct:8.1f}%", _YELLOW)
+                else:
+                    pct_str = _c(f"{cov_pct:8.1f}%", _RED)
+                print(
+                    _c(
+                        f"  {'(total, NUs)':<14}  {'db.' + family + '.*':<20}  {'':<16}"
+                        f"  {cov_pct:8.1f}%  {total_covered_nus:>8.1f}N  {total_od_nus:>8.1f}N  {total_nus:>9.1f}N",
+                        _CYAN,
+                    )
+                )
 
     # フッター統計
     low     = [s for s in summaries if s.status == "low"]

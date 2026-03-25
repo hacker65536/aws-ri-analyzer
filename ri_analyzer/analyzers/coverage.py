@@ -19,10 +19,11 @@ from ri_analyzer.analyzers.utilization import _parse_instance_family, _norm_fact
 
 @dataclass
 class CoverageSummary:
-    """アカウント × リージョン × インスタンスタイプ の集計"""
+    """アカウント × リージョン × インスタンスタイプ × プラットフォーム の集計"""
     account_id: str
     region: str
     instance_type: str
+    platform: str
     covered_hours: float
     on_demand_hours: float
     total_hours: float
@@ -70,7 +71,7 @@ def analyze(records: list[RiCoverageRecord]) -> list[CoverageSummary]:
     )
 
     for rec in records:
-        key = (rec.account_id, rec.region, rec.instance_type)
+        key = (rec.account_id, rec.region, rec.instance_type, rec.platform)
         agg[key]["covered"]   += rec.covered_hours
         agg[key]["on_demand"] += rec.on_demand_hours
         agg[key]["total"]     += rec.total_hours
@@ -80,6 +81,7 @@ def analyze(records: list[RiCoverageRecord]) -> list[CoverageSummary]:
             account_id      = key[0],
             region          = key[1],
             instance_type   = key[2],
+            platform        = key[3],
             covered_hours   = v["covered"],
             on_demand_hours = v["on_demand"],
             total_hours     = v["total"],
@@ -87,8 +89,8 @@ def analyze(records: list[RiCoverageRecord]) -> list[CoverageSummary]:
         for key, v in agg.items()
     ]
 
-    # instance family → サイズ（norm_factor 昇順）→ account_id
+    # platform → instance family → サイズ（norm_factor 昇順）→ account_id
     return sorted(
         summaries,
-        key=lambda s: (_parse_instance_family(s.instance_type), s.norm_factor, s.account_id),
+        key=lambda s: (s.platform, _parse_instance_family(s.instance_type), s.norm_factor, s.account_id),
     )

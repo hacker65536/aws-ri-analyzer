@@ -194,10 +194,11 @@ def fetch_ri_subscriptions(
 
 @dataclass
 class RiCoverageRecord:
-    """アカウント × リージョン × インスタンスタイプ単位のカバレッジレコード"""
+    """アカウント × リージョン × インスタンスタイプ × プラットフォーム単位のカバレッジレコード"""
     account_id: str
     region: str
     instance_type: str
+    platform: str
     period_start: str
     period_end: str
     covered_hours: float       # RI 適用済み時間
@@ -246,6 +247,7 @@ def fetch_ri_coverage(
                 {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"},
                 {"Type": "DIMENSION", "Key": "REGION"},
                 {"Type": "DIMENSION", "Key": "INSTANCE_TYPE"},
+                {"Type": "DIMENSION", "Key": "DATABASE_ENGINE"},
             ],
         )
     except ClientError as e:
@@ -265,6 +267,7 @@ def fetch_ri_coverage(
             account_id    = attrs.get("linkedAccount", "")
             region        = attrs.get("region", "")
             instance_type = attrs.get("instanceType", "")
+            platform      = attrs.get("databaseEngine", "")
             covered   = float(coverage.get("ReservedHours", 0))
             on_demand = float(coverage.get("OnDemandHours", 0))
             total     = float(coverage.get("TotalRunningHours", 0))
@@ -273,6 +276,7 @@ def fetch_ri_coverage(
                 account_id    = account_id,
                 region        = region,
                 instance_type = instance_type,
+                platform      = platform,
                 period_start  = tp["Start"],
                 period_end    = tp["End"],
                 covered_hours = covered,

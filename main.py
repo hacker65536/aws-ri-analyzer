@@ -19,6 +19,7 @@ from datetime import datetime
 
 from botocore.exceptions import TokenRetrievalError, SSOTokenLoadError
 
+from ri_analyzer.cache import CacheStore
 from ri_analyzer.config import Config
 from ri_analyzer.profile_resolver import resolve_profile
 from ri_analyzer.fetchers.cost_explorer import fetch_ri_subscriptions, fetch_ri_coverage, _ce_time_period
@@ -91,8 +92,23 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PCT",
         help="Show only coverage groups with coverage <= PCT%%",
     )
+    p.add_argument(
+        "--engine",
+        nargs="+",
+        default=None,
+        metavar="ENGINE",
+        help="Filter coverage by database engine (case-insensitive, partial match). e.g. --engine aurora mysql",
+    )
+    p.add_argument(
+        "--family",
+        nargs="+",
+        default=None,
+        metavar="FAMILY",
+        help="Filter coverage by instance family. e.g. --family r6g t4g",
+    )
     p.add_argument("--no-color", action="store_true", help="Disable colored output")
     p.add_argument("--show-sub-id", action="store_true", help="Show subscription ID column in utilization table")
+    p.add_argument("--no-cache", action="store_true", help="Bypass cache and fetch fresh data from AWS")
     return p
 
 
@@ -135,7 +151,10 @@ def main() -> None:
         cfg.save()
         print(f"  [Saved] Selections written to config.yaml")
 
+    cache = CacheStore(ttl_hours=cfg.analysis.cache_ttl_hours)
+
     print(f"\nAWS RI Analyzer  [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
+    print(f"  Config        : {cfg._path}")
     print(f"  Payer account : {cfg.payer.account_id}")
     print(f"  Services      : {', '.join(services)}")
     print(f"  Sections      : {', '.join(sections)}")
@@ -144,6 +163,10 @@ def main() -> None:
         print(f"  Filter        : utilization <= {args.max_util}%")
     if args.max_coverage is not None:
         print(f"  Filter        : coverage <= {args.max_coverage}%")
+    if args.engine:
+        print(f"  Filter        : engine = {', '.join(args.engine)}")
+    if args.family:
+        print(f"  Filter        : family = {', '.join(args.family)}")
 
     if cfg.payer.profile:
         payer_profile = cfg.payer.profile
@@ -166,27 +189,15 @@ def main() -> None:
         print(f"  CE period     : {start} to {end}  (end = UTC now - 48h)")
 
         # Fetch RI subscriptions + utilization from CE (payer account)
-        print("  Fetching RI data (GetReservationUtilization)...", end="", flush=True)
-        try:
-            subscriptions, util_records = fetch_ri_subscriptions(
-                payer_profile=payer_profile,
-                service=svc,
-                lookback_days=cfg.analysis.lookback_days,
-            )
-        except (TokenRetrievalError, SSOTokenLoadError):
-            _sso_expired_error(payer_profile)
-        except PermissionError as e:
-            print(f"\n[ERROR] {e}", file=sys.stderr)
-            sys.exit(1)
-        print(f" {len(subscriptions)} subscription(s)")
-
-        # Fetch coverage from CE (payer account)
-        # TODO: For per-instance detail, query CUR via Athena (plan B)
-        coverage_records = []
-        if "coverage" in sections:
-            print("  Fetching coverage (GetReservationCoverage)...", end="", flush=True)
+        sub_key = f"subscriptions:{payer_profile}:{svc}:{cfg.analysis.lookback_days}"
+        cached_sub = None if args.no_cache else cache.get(sub_key)
+        if cached_sub is not None:
+            subscriptions, util_records = cached_sub
+            print(f"  RI data (GetReservationUtilization)          : {len(subscriptions)} subscription(s)  [cache {cache.created_at(sub_key)}]")
+        else:
+            print("  Fetching RI data (GetReservationUtilization)...", end="", flush=True)
             try:
-                coverage_records = fetch_ri_coverage(
+                subscriptions, util_records = fetch_ri_subscriptions(
                     payer_profile=payer_profile,
                     service=svc,
                     lookback_days=cfg.analysis.lookback_days,
@@ -194,8 +205,35 @@ def main() -> None:
             except (TokenRetrievalError, SSOTokenLoadError):
                 _sso_expired_error(payer_profile)
             except PermissionError as e:
-                print(f"\n  [WARN] Skipped coverage: {e}")
-            print(f" {len(coverage_records)} record(s)")
+                print(f"\n[ERROR] {e}", file=sys.stderr)
+                sys.exit(1)
+            cache.set(sub_key, (subscriptions, util_records))
+            print(f" {len(subscriptions)} subscription(s)")
+
+        # Fetch coverage from CE (payer account)
+        # TODO: For per-instance detail, query CUR via Athena (plan B)
+        coverage_records = []
+        if "coverage" in sections:
+            cov_key = f"coverage:{payer_profile}:{svc}:{cfg.analysis.lookback_days}"
+            cached_cov = None if args.no_cache else cache.get(cov_key)
+            if cached_cov is not None:
+                coverage_records = cached_cov
+                print(f"  Coverage (GetReservationCoverage)            : {len(coverage_records)} record(s)  [cache {cache.created_at(cov_key)}]")
+            else:
+                print("  Fetching coverage (GetReservationCoverage)...", end="", flush=True)
+                try:
+                    coverage_records = fetch_ri_coverage(
+                        payer_profile=payer_profile,
+                        service=svc,
+                        lookback_days=cfg.analysis.lookback_days,
+                    )
+                except (TokenRetrievalError, SSOTokenLoadError):
+                    _sso_expired_error(payer_profile)
+                except PermissionError as e:
+                    print(f"\n  [WARN] Skipped coverage: {e}")
+                else:
+                    cache.set(cov_key, coverage_records)
+                print(f" {len(coverage_records)} record(s)")
 
         if "expiration" in sections:
             expired, warning, ok = exp_analyzer.analyze(
@@ -207,7 +245,12 @@ def main() -> None:
 
         if "coverage" in sections:
             coverage_summaries = cov_analyzer.analyze(coverage_records)
-            reporter.print_coverage(coverage_summaries, max_coverage=args.max_coverage)
+            reporter.print_coverage(
+                coverage_summaries,
+                max_coverage=args.max_coverage,
+                engines=args.engine,
+                families=args.family,
+            )
 
         if "utilization" in sections:
             summaries = util_analyzer.summarize(util_records)

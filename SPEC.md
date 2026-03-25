@@ -25,6 +25,7 @@ aws-ri-analyzer/
 ├── main.py                            # CLI エントリポイント
 ├── requirements.txt
 └── ri_analyzer/
+    ├── cache.py                       # AWS API レスポンスのローカルディスクキャッシュ
     ├── config.py                      # config.yaml の読み込み・バリデーション
     ├── profile_resolver.py            # account_id → AWS SSO プロファイル名 解決
     ├── fetchers/
@@ -92,6 +93,10 @@ analysis:
 
   # RI 有効期限の警告しきい値（日数）
   expiration_warn_days: 90
+
+  # AWS API レスポンスのキャッシュ TTL（時間）
+  # --no-cache フラグでバイパス可能
+  cache_ttl_hours: 24
 ```
 
 `services` / `sections` キーが config.yaml に存在しない場合、起動時にインタラクティブ選択が行われ、選択結果が config.yaml に書き戻される（`Config.save()` による全体書き直し）。
@@ -221,8 +226,9 @@ start = end - lookback_days
 #### `fetch_ri_coverage(payer_profile, service, lookback_days)`
 
 **API**: `ce:GetReservationCoverage`
-**GroupBy**: `LINKED_ACCOUNT`, `REGION`, `INSTANCE_TYPE`
+**GroupBy**: `LINKED_ACCOUNT`, `REGION`, `INSTANCE_TYPE`, `DATABASE_ENGINE`
 **注意**: `Granularity` と `GroupBy` は同時指定不可
+**注意**: RDS の場合 `PLATFORM` は使用不可。`DATABASE_ENGINE` を使う
 
 レスポンスの `CoveragesByTime[].Groups[]` から以下を抽出（`Attributes` に格納）：
 
@@ -231,6 +237,7 @@ start = end - lookback_days
 | account_id | `Attributes["linkedAccount"]` |
 | region | `Attributes["region"]` |
 | instance_type | `Attributes["instanceType"]` |
+| platform | `Attributes["databaseEngine"]`（例: "Aurora MySQL", "MySQL"） |
 | covered_hours | `Coverage.CoverageHours["ReservedHours"]`（`CoveredHours` ではない） |
 | on_demand_hours | `Coverage.CoverageHours["OnDemandHours"]` |
 | total_hours | `Coverage.CoverageHours["TotalRunningHours"]` |
@@ -256,7 +263,7 @@ start = end - lookback_days
 
 ### `analyzers/coverage.py`
 
-`RiCoverageRecord` を `(account_id, region, instance_type)` キーで集計し、
+`RiCoverageRecord` を `(account_id, region, instance_type, platform)` キーで集計し、
 `CoverageSummary` に変換。
 
 | ステータス | カバレッジ率 |
@@ -265,7 +272,7 @@ start = end - lookback_days
 | warning | 50% 〜 90% |
 | low | < 50% |
 
-ソート順: instance family → サイズ（norm_factor 昇順）→ account_id
+ソート順: platform（database engine）→ instance family → サイズ（norm_factor 昇順）→ account_id
 
 #### 正規化ユニット（Normalized Units）
 
@@ -314,10 +321,33 @@ nano=0.25 / micro=0.5 / small=1 / medium=2 / large=4 / xlarge=8 / 2xlarge=16 / .
   - `show_sub_id=True` で Subscription ID 列を追加表示
   - instance family 単位でサマリ行を表示（2件以上の場合）
   - 詳細行の `Unused` 列は `hrs` 単位、サマリ行は `NUs` 単位（正規化ユニット時間）
-- `print_coverage(summaries, max_coverage=None)`
+- `print_coverage(summaries, max_coverage=None, engines=None, families=None)`
   - `max_coverage` 指定時は coverage_pct がその値以下のレコードのみ表示
-  - instance family 単位でグループ化し、2件以上の場合はサマリ行を表示（NUs 加重 Coverage%）
-  - 詳細行は時間単位（hrs）、サマリ行は NUs 単位（`N` サフィックス）
+  - `engines` 指定時はデータベースエンジンで絞り込み（部分一致・大文字小文字無視）
+  - `families` 指定時はインスタンスファミリーで絞り込み（完全一致）
+  - database engine → instance family の 2 段階グループで表示
+  - エンジンヘッダーは `## Engine` + 区切り線で視覚的に強調
+  - 詳細行の列: Account ID / Instance Type / Region / Coverage / RI (hrs) / OD (hrs) / Total (hrs)
+  - family サマリ行（2件以上の場合）はラベルが `(total, NUs)`、値は NUs 単位（`N` サフィックス）
+
+---
+
+## キャッシュ（`cache.py`）
+
+AWS API レスポンスをローカルディスクにキャッシュし、繰り返し実行を高速化する。
+
+| 項目 | 内容 |
+|---|---|
+| 保存先 | `~/.cache/ri-analyzer/*.pkl` |
+| フォーマット | pickle（`datetime` 型を含むデータクラスをそのまま保存） |
+| デフォルト TTL | 24 時間（`config.yaml` の `cache_ttl_hours` で変更可） |
+| バイパス | `--no-cache` フラグ |
+| キャッシュキー | `{type}:{payer_profile}:{service}:{lookback_days}` の SHA-256（先頭 16 文字）|
+| スキーマ変更対応 | `_CACHE_VERSION` 定数をインクリメントすると既存キャッシュが自動無効化される |
+
+キャッシュされるデータ：
+- `subscriptions:{...}` → `(list[RiSubscription], list[RiUtilizationRecord])`
+- `coverage:{...}` → `list[RiCoverageRecord]`
 
 ---
 
