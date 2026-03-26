@@ -41,24 +41,83 @@ python main.py --no-cache
 python main.py --no-color > output.log
 ```
 
+### Athena / CUR 機能
+
+CUR（Cost and Usage Report）を Athena 経由でクエリする機能。
+`config.yaml` の `athena` セクション設定が前提（S3 + Athena / Glue のセットアップが必要）。
+
+```bash
+# CUR セクションを追加（先月が自動適用）
+python main.py --service rds --athena
+
+# 年月を明示指定
+python main.py --service rds --athena --cur-year 2026 --cur-month 3
+
+# CUR セクションだけ表示
+python main.py --service rds --section cur_instances cur_coverage unused_ri
+
+# CE Recommendation + CUR ファクトチェック
+python main.py --service rds --section recommendations --athena
+```
+
+#### SQL テンプレートの直接実行（`athena_run.py`）
+
+```bash
+# テンプレート一覧
+python athena_run.py --list
+
+# テンプレートを実行（変数を -p で渡す）
+python athena_run.py rds_instances -p year=2026 -p month=3
+python athena_run.py ce_factcheck_rds -p year=2026 -p month=3 \
+  -p instance_type=db.r6g.large -p region=ap-northeast-1 -p engine=Aurora
+
+# カスタム SQL ファイルを実行（{{ variable }} 形式で変数埋め込み可）
+python athena_run.py ./queries/my_query.sql -p year=2026 -p month=3
+
+# サイズ閾値・表示行数の調整
+python athena_run.py rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 20
+```
+
+> **注意**: CUR のパーティション `month` はゼロ埋めなし（`'3'` / `'12'`）。
+> `athena_run.py` は `-p month=03` と渡されても自動的に `'3'` に正規化する。
+
 ### オプション一覧
 
 | オプション | 説明 |
 |---|---|
 | `--service SERVICE [...]` | 対象サービス（**rds** / **elasticache** / opensearch）複数指定可 |
-| `--section SECTION [...]` | 表示セクション（expiration / coverage / utilization）複数指定可 |
+| `--section SECTION [...]` | 表示セクション（後述）複数指定可 |
 | `--max-util PCT` | 利用率が PCT% 以下のサブスクリプションのみ表示 |
 | `--max-coverage PCT` | カバレッジが PCT% 以下のグループのみ表示 |
-| `--engine ENGINE [...]` | カバレッジをデータベースエンジンで絞り込み（部分一致・大文字小文字無視）|
-| `--family FAMILY [...]` | カバレッジをインスタンスファミリーで絞り込み（例: r6g t4g）|
+| `--engine ENGINE [...]` | エンジンで絞り込み（部分一致・大文字小文字無視）|
+| `--family FAMILY [...]` | インスタンスファミリーで絞り込み（例: r6g t4g）|
 | `--show-sub-id` | Utilization テーブルに Subscription ID 列を表示 |
 | `--no-color` | カラー出力を無効化 |
 | `--no-cache` | キャッシュを無視して AWS から再取得 |
 | `--config PATH` | 設定ファイルのパス（デフォルト: config.yaml） |
+| `--athena` | Athena/CUR セクションを有効化 |
+| `--cur-year YYYY` | CUR クエリ年（省略時: 先月）|
+| `--cur-month M` | CUR クエリ月 1〜12（省略時: 先月）|
+
+#### セクション一覧
+
+| セクション | データソース | 内容 |
+|---|---|---|
+| `expiration` | CE API | RI 有効期限チェック |
+| `coverage` | CE API | RI カバレッジ率 |
+| `utilization` | CE API | RI 利用率・未使用時間 |
+| `recommendations` | CE API | RI 購入推奨 |
+| `cur_instances` | Athena/CUR | 稼働中インスタンス一覧（実績使用時間・コスト）|
+| `cur_coverage` | Athena/CUR | CUR ベースの RI カバレッジ詳細 |
+| `unused_ri` | Athena/CUR | 未使用 RI 費用（RIFee 行）|
+
+`--athena` フラグは `cur_instances` / `cur_coverage` / `unused_ri` を一括追加し、
+`recommendations` と組み合わせると CE Recommendation のファクトチェックも自動表示する。
 
 ### キャッシュ
 
-AWS API レスポンスは `~/.cache/ri-analyzer/` にキャッシュされる（デフォルト TTL: 24 時間）。
-TTL は `config.yaml` の `cache_ttl_hours` で変更可能。`--no-cache` でバイパス可能。
+AWS API・Athena クエリ結果は `~/.cache/ri-analyzer/` にキャッシュされる（デフォルト TTL: 24 時間）。
+Athena スキーマキャッシュは TTL 168 時間（1 週間）。
+TTL は `config.yaml` で変更可能。`--no-cache` でバイパス可能。
 
 詳細な仕様・設計については [SPEC.md](SPEC.md) を参照。

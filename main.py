@@ -9,13 +9,15 @@ Usage:
   python main.py --max-util 80
   python main.py --max-coverage 90
   python main.py --no-color
+  python main.py --athena                              # CUR セクションを追加
+  python main.py --athena --cur-year 2026 --cur-month 2
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from botocore.exceptions import TokenRetrievalError, SSOTokenLoadError
 
@@ -26,11 +28,20 @@ from ri_analyzer.fetchers.cost_explorer import fetch_ri_subscriptions, fetch_ri_
 from ri_analyzer.analyzers import expiration as exp_analyzer
 from ri_analyzer.analyzers import coverage as cov_analyzer
 from ri_analyzer.analyzers import utilization as util_analyzer
+from ri_analyzer.analyzers.cur_detail import (
+    parse_rds_instances, parse_elasticache_nodes,
+    parse_cur_coverage, parse_unused_ri,
+    factcheck_recommendations,
+)
 from ri_analyzer import reporter
 
 
 _ALL_SERVICES = ["rds", "elasticache", "opensearch"]
-_ALL_SECTIONS = ["expiration", "coverage", "utilization", "recommendations"]
+_ALL_SECTIONS = ["expiration", "coverage", "utilization", "recommendations",
+                 "cur_instances", "cur_coverage", "unused_ri"]
+
+# Athena が必要なセクション
+_ATHENA_SECTIONS = {"cur_instances", "cur_coverage", "unused_ri"}
 
 
 def _prompt_multiselect(label: str, choices: list[str]) -> list[str]:
@@ -109,6 +120,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-color", action="store_true", help="Disable colored output")
     p.add_argument("--show-sub-id", action="store_true", help="Show subscription ID column in utilization table")
     p.add_argument("--no-cache", action="store_true", help="Bypass cache and fetch fresh data from AWS")
+
+    # Athena / CUR オプション
+    athena_grp = p.add_argument_group("Athena / CUR options")
+    athena_grp.add_argument(
+        "--athena",
+        action="store_true",
+        help="Enable Athena CUR sections (cur_instances, cur_coverage, unused_ri, ce_factcheck)",
+    )
+    athena_grp.add_argument(
+        "--cur-year",
+        type=int,
+        default=None,
+        metavar="YYYY",
+        help="CUR query year (default: last month)",
+    )
+    athena_grp.add_argument(
+        "--cur-month",
+        type=int,
+        default=None,
+        metavar="M",
+        help="CUR query month 1-12 (default: last month)",
+    )
     return p
 
 
@@ -151,6 +184,35 @@ def main() -> None:
         cfg.save()
         print(f"  [Saved] Selections written to config.yaml")
 
+    # --athena フラグ → CUR セクションを sections に追加
+    if args.athena:
+        for s in ["cur_instances", "cur_coverage", "unused_ri"]:
+            if s not in sections:
+                sections.append(s)
+
+    # CUR の year / month を決定（デフォルト: 先月）
+    now = datetime.now(timezone.utc)
+    if now.month == 1:
+        _default_cur_year, _default_cur_month = now.year - 1, 12
+    else:
+        _default_cur_year, _default_cur_month = now.year, now.month - 1
+    cur_year  = args.cur_year  or _default_cur_year
+    cur_month = args.cur_month or _default_cur_month
+
+    # Athena セクションが必要な場合はクライアントを初期化
+    athena_client = None
+    needs_athena = args.athena or any(s in sections for s in _ATHENA_SECTIONS)
+    if needs_athena:
+        if cfg.athena is None:
+            print("[ERROR] config.yaml に athena セクションがありません。--athena を使う場合は設定してください。", file=sys.stderr)
+            sys.exit(1)
+        from ri_analyzer.fetchers.athena import AthenaClient
+        from ri_analyzer.fetchers.cur_queries import (
+            running_rds_instances, running_elasticache_nodes,
+            ri_coverage_detail, unused_ri_cost,
+        )
+        athena_client = AthenaClient(cfg.athena, payer_profile=cfg.payer.profile if cfg.payer.profile else None)
+
     cache = CacheStore(ttl_hours=cfg.analysis.cache_ttl_hours)
 
     print(f"\nAWS RI Analyzer  [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
@@ -167,6 +229,8 @@ def main() -> None:
         print(f"  Filter        : engine = {', '.join(args.engine)}")
     if args.family:
         print(f"  Filter        : family = {', '.join(args.family)}")
+    if needs_athena:
+        print(f"  CUR period    : {cur_year}-{cur_month:02d}")
 
     if cfg.payer.profile:
         payer_profile = cfg.payer.profile
@@ -187,6 +251,8 @@ def main() -> None:
         start, end = _ce_time_period(cfg.analysis.lookback_days)
         print(f"\n  -- {svc.upper()} --")
         print(f"  CE period     : {start} to {end}  (end = UTC now - 48h)")
+
+        rec_groups: list = []  # recommendations セクションで設定される（factcheck で参照）
 
         # Fetch RI subscriptions + utilization from CE (payer account)
         sub_key = f"subscriptions:{payer_profile}:{svc}:{cfg.analysis.lookback_days}"
@@ -289,6 +355,83 @@ def main() -> None:
                 engines=args.engine,
                 families=args.family,
             )
+
+        # ── Athena / CUR セクション ───────────────────────────────
+        if athena_client is None:
+            continue
+
+        _svc_label = {"rds": "AmazonRDS", "elasticache": "AmazonElastiCache"}.get(svc)
+        if _svc_label is None:
+            continue  # Athena クエリ未対応サービスはスキップ
+
+        if "cur_instances" in sections or args.athena:
+            cur_inst_key = f"athena:instances:{svc}:{cur_year}:{cur_month}"
+            cached_inst = None if args.no_cache else cache.get(cur_inst_key)
+            if cached_inst is not None:
+                cur_inst_rows = cached_inst
+                print(f"  CUR instances                                        : {len(cur_inst_rows)} row(s)  [cache {cache.created_at(cur_inst_key)}]")
+            else:
+                print(f"  Fetching CUR instances (Athena, {cur_year}-{cur_month:02d})...", end="", flush=True)
+                try:
+                    raw = (running_rds_instances if svc == "rds" else running_elasticache_nodes)(
+                        athena_client, year=cur_year, month=cur_month,
+                        regions=cfg.analysis.regions if cfg.analysis.regions else None,
+                    )
+                    cur_inst_rows = (parse_rds_instances if svc == "rds" else parse_elasticache_nodes)(raw)
+                    cache.set(cur_inst_key, cur_inst_rows)
+                    print(f" {len(cur_inst_rows)} row(s)")
+                except Exception as e:
+                    print(f"\n  [WARN] Skipped CUR instances: {e}")
+                    cur_inst_rows = []
+
+            if "cur_instances" in sections and cur_inst_rows:
+                reporter.print_cur_instances(cur_inst_rows, svc, cur_year, cur_month)
+
+            # CE Recommendation ファクトチェック（recommendations も実行済みの場合）
+            if args.athena and "recommendations" in sections and rec_groups and cur_inst_rows:
+                all_details = [d for g in rec_groups for d in g.details]
+                if args.engine:
+                    engines_lower = [e.lower() for e in args.engine]
+                    all_details = [d for d in all_details if any(e in d.platform.lower() for e in engines_lower)]
+                checks = factcheck_recommendations(all_details, cur_inst_rows)
+                reporter.print_ce_factcheck(checks, svc, cur_year, cur_month)
+
+        if "cur_coverage" in sections:
+            cur_cov_key = f"athena:coverage:{svc}:{cur_year}:{cur_month}"
+            cached_cov = None if args.no_cache else cache.get(cur_cov_key)
+            if cached_cov is not None:
+                cur_cov_rows = cached_cov
+                print(f"  CUR coverage                                         : {len(cur_cov_rows)} row(s)  [cache {cache.created_at(cur_cov_key)}]")
+            else:
+                print(f"  Fetching CUR coverage (Athena, {cur_year}-{cur_month:02d})...", end="", flush=True)
+                try:
+                    raw = ri_coverage_detail(athena_client, year=cur_year, month=cur_month, service=_svc_label)
+                    cur_cov_rows = parse_cur_coverage(raw)
+                    cache.set(cur_cov_key, cur_cov_rows)
+                    print(f" {len(cur_cov_rows)} row(s)")
+                except Exception as e:
+                    print(f"\n  [WARN] Skipped CUR coverage: {e}")
+                    cur_cov_rows = []
+            if cur_cov_rows:
+                reporter.print_cur_coverage(cur_cov_rows, svc, cur_year, cur_month)
+
+        if "unused_ri" in sections:
+            unused_key = f"athena:unused_ri:{svc}:{cur_year}:{cur_month}"
+            cached_unused = None if args.no_cache else cache.get(unused_key)
+            if cached_unused is not None:
+                unused_rows = cached_unused
+                print(f"  CUR unused RI                                        : {len(unused_rows)} row(s)  [cache {cache.created_at(unused_key)}]")
+            else:
+                print(f"  Fetching CUR unused RI (Athena, {cur_year}-{cur_month:02d})...", end="", flush=True)
+                try:
+                    raw = unused_ri_cost(athena_client, year=cur_year, month=cur_month, service=_svc_label)
+                    unused_rows = parse_unused_ri(raw)
+                    cache.set(unused_key, unused_rows)
+                    print(f" {len(unused_rows)} row(s)")
+                except Exception as e:
+                    print(f"\n  [WARN] Skipped CUR unused RI: {e}")
+                    unused_rows = []
+            reporter.print_unused_ri(unused_rows, svc, cur_year, cur_month)
 
     print()
 

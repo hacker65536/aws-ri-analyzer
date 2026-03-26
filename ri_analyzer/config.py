@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -25,6 +25,18 @@ class RecommendationConfig:
 
 
 @dataclass
+class AthenaConfig:
+    database: str = "athenacurcfn_cur"
+    table: str = "athenacurcfn_cur"
+    workgroup: str = "primary"
+    output_location: str = ""           # 必須: s3://bucket/prefix/
+    result_mode: str = "api"            # "api" | "s3"
+    schema_cache_ttl_hours: float = 168.0
+    profile: Optional[str] = None       # 省略時は payer プロファイルを流用
+    region: str = "ap-northeast-1"
+
+
+@dataclass
 class AnalysisConfig:
     services: Optional[List[str]]       # None = not configured (will prompt)
     sections: Optional[List[str]]       # None = not configured (will prompt)
@@ -39,6 +51,7 @@ class Config:
     payer: PayerConfig
     analysis: AnalysisConfig
     recommendation: RecommendationConfig = None  # type: ignore[assignment]
+    athena: Optional[AthenaConfig] = None
     _path: Path = DEFAULT_CONFIG_PATH
 
     def __post_init__(self) -> None:
@@ -60,6 +73,21 @@ class Config:
 
         analysis_raw = raw.get("analysis", {})
         rec_raw = raw.get("recommendation", {})
+        athena_raw = raw.get("athena") or {}
+
+        athena_cfg: Optional[AthenaConfig] = None
+        if athena_raw:
+            athena_cfg = AthenaConfig(
+                database=athena_raw.get("database", "athenacurcfn_cur"),
+                table=athena_raw.get("table", "athenacurcfn_cur"),
+                workgroup=athena_raw.get("workgroup", "primary"),
+                output_location=athena_raw.get("output_location", ""),
+                result_mode=athena_raw.get("result_mode", "api"),
+                schema_cache_ttl_hours=float(athena_raw.get("schema_cache_ttl_hours", 168.0)),
+                profile=athena_raw.get("profile") or None,
+                region=athena_raw.get("region", "ap-northeast-1"),
+            )
+
         cfg = cls(
             payer=PayerConfig(
                 account_id=str(payer_raw["account_id"]),
@@ -78,6 +106,7 @@ class Config:
                 payment_option=rec_raw.get("payment_option", "ALL_UPFRONT"),
                 lookback_days=int(rec_raw.get("lookback_days", 30)),
             ),
+            athena=athena_cfg,
         )
         cfg._path = config_path
         return cfg
