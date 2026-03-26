@@ -300,6 +300,79 @@ def fetch_ri_coverage(
     return records
 
 
+def fetch_ri_coverage_range(
+    payer_profile: str | None,
+    service: str,
+    start_date: str,
+    end_date: str,
+) -> list[RiCoverageRecord]:
+    """期間を直接指定して CE GetReservationCoverage を呼ぶ。
+
+    Parameters
+    ----------
+    start_date : "YYYY-MM-DD"（inclusive）
+    end_date   : "YYYY-MM-DD"（exclusive、CE の仕様に合わせて翌日を渡す）
+
+    CUR の line_item_usage_start_date と同じ期間を渡すことで突き合わせが可能。
+    """
+
+    ce_service = _CE_SERVICE_NAMES.get(service)
+    if not ce_service:
+        raise ValueError(f"未対応のサービスです: {service}。対応: {list(_CE_SERVICE_NAMES)}")
+
+    session = boto3.Session(profile_name=payer_profile, region_name="us-east-1")
+    ce = session.client("ce")
+
+    try:
+        resp = ce.get_reservation_coverage(
+            TimePeriod={"Start": start_date, "End": end_date},
+            Filter={
+                "Dimensions": {
+                    "Key":    "SERVICE",
+                    "Values": [ce_service],
+                }
+            },
+            GroupBy=[
+                {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"},
+                {"Type": "DIMENSION", "Key": "REGION"},
+                {"Type": "DIMENSION", "Key": "INSTANCE_TYPE"},
+                {"Type": "DIMENSION", "Key": _CE_ENGINE_DIMENSION.get(service, "DATABASE_ENGINE")},
+            ],
+        )
+    except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code in ("AccessDeniedException", "OptInRequired"):
+            raise PermissionError(
+                f"Cost Explorer へのアクセスが拒否されました ({code})。"
+            ) from e
+        raise
+
+    records: list[RiCoverageRecord] = []
+    for period in resp.get("CoveragesByTime", []):
+        tp = period["TimePeriod"]
+        for group in period.get("Groups", []):
+            attrs    = group.get("Attributes", {})
+            coverage = group.get("Coverage", {}).get("CoverageHours", {})
+            covered   = float(coverage.get("ReservedHours", 0))
+            on_demand = float(coverage.get("OnDemandHours", 0))
+            total     = float(coverage.get("TotalRunningHours", 0))
+            pct       = float(coverage.get("CoverageHoursPercentage", 0))
+            records.append(RiCoverageRecord(
+                account_id      = attrs.get("linkedAccount", ""),
+                region          = attrs.get("region", ""),
+                instance_type   = attrs.get("instanceType", ""),
+                platform        = attrs.get(_CE_ENGINE_ATTR.get(service, "databaseEngine"), ""),
+                period_start    = tp["Start"],
+                period_end      = tp["End"],
+                covered_hours   = covered,
+                on_demand_hours = on_demand,
+                total_hours     = total,
+                coverage_pct    = pct,
+            ))
+
+    return records
+
+
 # ──────────────────────────────────────────────
 # Recommendations
 # ──────────────────────────────────────────────

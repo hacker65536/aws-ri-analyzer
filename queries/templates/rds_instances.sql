@@ -1,5 +1,5 @@
 -- テンプレート: 稼働中 RDS インスタンス（account / region / type 別 usage hours）
--- 変数: {{ year }}, {{ month }}, [{{ region }}], [{{ account_id }}]
+-- 変数: year, month, [region], [account_id]
 --
 -- 例:
 --   python athena_run.py rds_instances -p year=2026 -p month=3

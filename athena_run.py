@@ -20,7 +20,9 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import List, Tuple
 
 from ri_analyzer.config import Config
 from ri_analyzer.fetchers.athena import AthenaClient, PartitionMissingError
@@ -37,6 +39,30 @@ _MAX_CELL = 40
 # ---------------------------------------------------------------------------
 # テンプレート処理
 # ---------------------------------------------------------------------------
+
+def ce_period_months(lookback_days: int) -> List[Tuple[int, int]]:
+    """CE と同じ期間に含まれる (year, month) のリストを返す。
+
+    CE の期間:
+      end   = UTC now - 48h
+      start = end - lookback_days
+
+    Returns: [(year, month), ...] 昇順
+    """
+    now_utc = datetime.now(timezone.utc)
+    end_date = (now_utc - timedelta(hours=48)).date()
+    start_date = end_date - timedelta(days=lookback_days)
+
+    months: List[Tuple[int, int]] = []
+    y, m = start_date.year, start_date.month
+    while (y, m) <= (end_date.year, end_date.month):
+        months.append((y, m))
+        if m == 12:
+            y, m = y + 1, 1
+        else:
+            m += 1
+    return months
+
 
 def list_templates() -> list[tuple[str, str]]:
     """(テンプレート名, 説明1行目) のリストを返す。"""
@@ -203,6 +229,16 @@ def main() -> None:
         help="CSV ダウンロード先（省略時: ~/.cache/ri-analyzer/query_results/）",
     )
     parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="キャッシュを使わず毎回 Athena に問い合わせる",
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="既存キャッシュを削除して再実行する（--no-cache と組み合わせ不要）",
+    )
+    parser.add_argument(
         "--no-partition-check",
         action="store_true",
         help="year / month パーティション条件チェックをスキップ",
@@ -249,63 +285,102 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        params = parse_params(args.param)
+        base_params = parse_params(args.param)
         # config の database / table を既定値として設定（-p で上書き可能）
-        params.setdefault("database", cfg.athena.database)
-        params.setdefault("table", cfg.athena.table)
-        sql = render_template(sql_raw, params)
+        base_params.setdefault("database", cfg.athena.database)
+        base_params.setdefault("table", cfg.athena.table)
     except ValueError as e:
         info(f"[ERROR] {e}")
         sys.exit(1)
 
+    # year / month が未指定なら CE 期間（lookback_days）から自動導出
+    if "year" not in base_params and "month" not in base_params:
+        months = ce_period_months(cfg.analysis.lookback_days)
+        info(f"[INFO] CE 期間     : lookback={cfg.analysis.lookback_days}d → "
+             f"{months[0][0]}-{months[0][1]:02d} 〜 {months[-1][0]}-{months[-1][1]:02d}")
+    else:
+        # 両方指定されていない場合はエラー
+        if "year" not in base_params or "month" not in base_params:
+            info("[ERROR] -p year=YYYY と -p month=M は両方指定してください")
+            sys.exit(1)
+        months = [(int(base_params["year"]), int(base_params["month"]))]
+
+    use_cache = not args.no_cache
     client = AthenaClient(cfg.athena, payer_profile=cfg.payer.profile)
 
     info(f"[INFO] テンプレート : {sql_path.name}")
-    if params:
-        info(f"[INFO] 変数        : {params}")
     info(f"[INFO] サイズ閾値  : {args.limit_mb} MB")
-    info("[INFO] クエリ実行中...")
+    if not use_cache:
+        info("[INFO] キャッシュ  : 無効")
 
-    try:
-        result = client.run_from_file(
-            sql_path=_write_rendered_sql(sql),
-            enforce_partition=not args.no_partition_check,
-            size_limit_mb=args.limit_mb,
-            download_dir=args.download_dir,
-        )
-    except PartitionMissingError as e:
-        info(f"[ERROR] {e}")
-        sys.exit(1)
+    all_rows: List[dict] = []
 
-    # 結果メタ情報
-    info(f"\n{'─' * 60}")
-    info(f"  Query ID  : {result.query_id}")
-    info(f"  S3 結果   : {result.s3_path}")
-    info(f"  サイズ    : {result.size_mb:.2f} MB ({result.size_bytes:,} bytes)")
-    info(f"  実行時間  : {result.elapsed_sec:.1f} 秒")
+    for year, month in months:
+        params = {**base_params, "year": str(year), "month": str(month)}
 
-    if not result.downloaded:
-        info(f"\n[INFO] サイズが {args.limit_mb} MB を超えているためダウンロードしません。")
-        info(f"       S3 から直接確認: {result.s3_path}")
-        info(f"\n       より大きな閾値を指定する場合:")
-        info(f"         python athena_run.py {args.target} --limit-mb 100 {' '.join('-p ' + p for p in args.param)}")
-        return
+        try:
+            sql = render_template(sql_raw, params)
+        except ValueError as e:
+            info(f"[ERROR] {e}")
+            sys.exit(1)
 
-    rows = result.rows or []
-    if result.local_path:
-        info(f"  保存先    : {result.local_path}")
-    info(f"  行数      : {len(rows):,} 行")
+        # --refresh: 対象クエリのキャッシュを削除
+        if args.refresh:
+            from ri_analyzer.fetchers.athena import _sql_hash
+            h = _sql_hash(sql)
+            cache_dir = Path.home() / ".cache" / "ri-analyzer" / "query_results"
+            for ext in (".csv", ".meta.json"):
+                p = cache_dir / f"{h}{ext}"
+                if p.exists():
+                    p.unlink()
+                    info(f"[INFO] キャッシュ削除: {p}")
+
+        info(f"[INFO] 実行中      : {year}-{month:02d} ...")
+
+        try:
+            result = client.run_from_file(
+                sql_path=_write_rendered_sql(sql),
+                enforce_partition=not args.no_partition_check,
+                size_limit_mb=args.limit_mb,
+                download_dir=args.download_dir,
+                use_cache=use_cache,
+            )
+        except PartitionMissingError as e:
+            info(f"[ERROR] {e}")
+            sys.exit(1)
+
+        # 結果メタ情報
+        cache_label = " [CACHE HIT]" if result.from_cache else ""
+        info(f"{'─' * 60}")
+        info(f"  {year}-{month:02d}{cache_label}")
+        if result.s3_path:
+            info(f"  Query ID  : {result.query_id}")
+        if result.size_bytes:
+            info(f"  サイズ    : {result.size_mb:.2f} MB")
+        if not result.from_cache:
+            info(f"  実行時間  : {result.elapsed_sec:.1f} 秒")
+
+        if not result.downloaded:
+            info(f"  [SKIP] サイズが {args.limit_mb} MB 超のためダウンロードしません。")
+            info(f"         S3 から直接確認: {result.s3_path}")
+            continue
+
+        month_rows = result.rows or []
+        info(f"  行数      : {len(month_rows):,} 行")
+        all_rows.extend(month_rows)
+
     info(f"{'─' * 60}\n")
 
-    if not rows:
+    if not all_rows:
         info("[INFO] 結果が 0 行でした。")
         return
 
-    display_rows = rows if args.head == 0 else rows[: args.head]
+    info(f"  合計      : {len(all_rows):,} 行\n")
+    display_rows = all_rows if args.head == 0 else all_rows[: args.head]
     print_table(display_rows)
 
-    if args.head > 0 and len(rows) > args.head:
-        info(f"\n... {len(rows) - args.head} 行省略 (--head {args.head})")
+    if args.head > 0 and len(all_rows) > args.head:
+        info(f"\n... {len(all_rows) - args.head} 行省略 (--head {args.head})")
 
 
 def _write_rendered_sql(sql: str) -> Path:

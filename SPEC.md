@@ -33,12 +33,15 @@ aws-ri-analyzer/
 ├── athena_run.py                      # SQL テンプレート / カスタム SQL 実行 CLI
 ├── requirements.txt
 ├── queries/
+│   ├── rds_running_instances.sql      # カスタム SQL サンプル
 │   └── templates/                     # SQL テンプレート（{{ variable }} 形式）
-│       ├── rds_instances.sql
-│       ├── elasticache_nodes.sql
-│       ├── ri_coverage.sql
-│       ├── ce_factcheck_rds.sql
-│       └── unused_ri.sql
+│       ├── rds_instances.sql          # 稼働中 RDS インスタンス一覧
+│       ├── elasticache_nodes.sql      # 稼働中 ElastiCache ノード一覧
+│       ├── ri_coverage.sql            # RI カバレッジ（全月）
+│       ├── ri_coverage_period.sql     # RI カバレッジ（日付範囲指定、CE 突き合わせ用）
+│       ├── rds_resource_ids.sql       # RDS リソース ID 別 OD/RI コスト内訳
+│       ├── ce_factcheck_rds.sql       # CE 推奨の実績確認
+│       └── unused_ri.sql             # 未使用 RI 費用
 └── ri_analyzer/
     ├── cache.py                       # AWS API レスポンスのローカルディスクキャッシュ
     ├── config.py                      # config.yaml の読み込み・バリデーション（AthenaConfig 含む）
@@ -54,6 +57,7 @@ aws-ri-analyzer/
     │   ├── utilization.py             # 利用率集計ロジック
     │   └── cur_detail.py              # CUR データ構造体・パーサ・ファクトチェック
     └── reporter.py                    # コンソール出力（CE + CUR セクション、英語・カラー対応）
+compare_cur_ce.py                      # CUR vs CE カバレッジ精度検証スクリプト
 ```
 
 ---
@@ -102,6 +106,7 @@ athena:                          # Athena / CUR 機能（オプション）
   output_location: s3://your-bucket/athena-results/   # 結果出力先 S3
   result_mode: api               # "api"（小規模）/ "s3"（大規模 CSV）
   schema_cache_ttl_hours: 168    # スキーマキャッシュ TTL（デフォルト: 1 週間）
+  query_cache_ttl_hours: 24      # クエリ結果キャッシュ TTL（デフォルト: 24 時間）
   region: ap-northeast-1         # Athena エンドポイントのリージョン
   # profile: "..."               # 省略時は payer プロファイルを流用
 

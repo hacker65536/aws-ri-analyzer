@@ -66,8 +66,10 @@ python main.py --service rds --section recommendations --athena
 # テンプレート一覧
 python athena_run.py --list
 
-# テンプレートを実行（変数を -p で渡す）
+# テンプレートを実行（year/month 省略時は CE と同じ期間を自動適用）
 python athena_run.py rds_instances -p year=2026 -p month=3
+python athena_run.py rds_resource_ids \
+  -p instance_type_prefix=db.r8g -p engine="Aurora MySQL"
 python athena_run.py ce_factcheck_rds -p year=2026 -p month=3 \
   -p instance_type=db.r6g.large -p region=ap-northeast-1 -p engine=Aurora
 
@@ -76,10 +78,34 @@ python athena_run.py ./queries/my_query.sql -p year=2026 -p month=3
 
 # サイズ閾値・表示行数の調整
 python athena_run.py rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 20
+
+# キャッシュ制御
+python athena_run.py rds_instances --refresh   # キャッシュ削除して再実行
+python athena_run.py rds_instances --no-cache  # キャッシュを使わず毎回実行
 ```
 
 > **注意**: CUR のパーティション `month` はゼロ埋めなし（`'3'` / `'12'`）。
 > `athena_run.py` は `-p month=03` と渡されても自動的に `'3'` に正規化する。
+
+#### CUR vs CE カバレッジ検証（`compare_cur_ce.py`）
+
+CUR（Athena）と CE API のカバレッジ数値を突き合わせて精度を検証するスクリプト。
+CE と同じ期間（`lookback_days` 設定から自動計算）で比較する。
+
+```bash
+# r8g Aurora MySQL の CUR vs CE を比較
+python compare_cur_ce.py --year 2026 --month 3 --service rds \
+  --instance-type-prefix db.r8g --engine "Aurora MySQL"
+```
+
+出力例：
+```
+account_id     region          instance_type     total_CUR  total_CE   Δtotal  ...  status
+123456789012   ap-northeast-1  db.r8g.large         2922.0    2922.0     -0.0  ...  OK
+...
+合計 total : CUR=6187.4h  CE=6187.5h  Δ=-0.0h (-0.00%)
+判定: OK=7  MISMATCH=0  CUR-only=0  CE-only=0
+```
 
 ### オプション一覧
 
@@ -116,8 +142,14 @@ python athena_run.py rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 
 
 ### キャッシュ
 
-AWS API・Athena クエリ結果は `~/.cache/ri-analyzer/` にキャッシュされる（デフォルト TTL: 24 時間）。
-Athena スキーマキャッシュは TTL 168 時間（1 週間）。
-TTL は `config.yaml` で変更可能。`--no-cache` でバイパス可能。
+| 種別 | 保存先 | デフォルト TTL | 設定キー |
+|---|---|---|---|
+| AWS API レスポンス | `~/.cache/ri-analyzer/*.json` | 24 時間 | `analysis.cache_ttl_hours` |
+| Athena スキーマ | `~/.cache/ri-analyzer/athena_schema_*.json` | 168 時間 | `athena.schema_cache_ttl_hours` |
+| Athena クエリ結果 | `~/.cache/ri-analyzer/query_results/{sql_hash}.csv` | 24 時間 | `athena.query_cache_ttl_hours` |
+
+Athena クエリ結果のキャッシュキーは **実体化された SQL 文字列の SHA256 ハッシュ**。
+同じテンプレート・同じパラメータなら 2 回目以降は Athena を呼ばずにローカルから返す。
+`--no-cache` / `--refresh` でバイパス可能。
 
 詳細な仕様・設計については [SPEC.md](SPEC.md) を参照。

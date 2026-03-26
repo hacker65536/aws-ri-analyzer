@@ -32,6 +32,7 @@ class AthenaConfig:
     output_location: str = ""           # 必須: s3://bucket/prefix/
     result_mode: str = "api"            # "api" | "s3"
     schema_cache_ttl_hours: float = 168.0
+    query_cache_ttl_hours: float = 24.0  # クエリ結果キャッシュの有効期間（時間）
     profile: Optional[str] = None       # 省略時は payer プロファイルを流用
     region: str = "ap-northeast-1"
 
@@ -84,6 +85,7 @@ class Config:
                 output_location=athena_raw.get("output_location", ""),
                 result_mode=athena_raw.get("result_mode", "api"),
                 schema_cache_ttl_hours=float(athena_raw.get("schema_cache_ttl_hours", 168.0)),
+                query_cache_ttl_hours=float(athena_raw.get("query_cache_ttl_hours", 24.0)),
                 profile=athena_raw.get("profile") or None,
                 region=athena_raw.get("region", "ap-northeast-1"),
             )

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import time
@@ -49,13 +50,14 @@ class PartitionMissingError(ValueError):
 
 @dataclass
 class QueryResult:
-    """run_from_file の返り値"""
+    """run_query / run_from_file の返り値"""
     query_id: str
     s3_path: str                        # s3://bucket/key
     size_bytes: int
     elapsed_sec: float
     rows: Optional[List[Dict[str, Any]]]  # None = サイズ超過のためスキップ
     local_path: Optional[Path] = None    # ダウンロード済みファイルパス
+    from_cache: bool = False             # True = ローカルキャッシュから返した
 
     @property
     def size_mb(self) -> float:
@@ -101,6 +103,7 @@ class AthenaClient:
         *,
         enforce_partition: bool = True,
         params: Optional[List[str]] = None,
+        use_cache: bool = True,
     ) -> List[Dict[str, Any]]:
         """SQL を実行して行のリストを返す。
 
@@ -111,6 +114,7 @@ class AthenaClient:
                            含まれていない SQL は PartitionMissingError を raise する
         params            : プレースホルダに渡す値リスト（Athena の PreparedStatement
                            ではなく、クライアントサイドで文字列置換する）
+        use_cache         : True のとき、TTL 内のキャッシュがあれば Athena を呼ばずに返す
         """
         if params:
             sql = _bind_params(sql, params)
@@ -118,12 +122,29 @@ class AthenaClient:
         if enforce_partition:
             _assert_partition(sql)
 
+        sql_hash = _sql_hash(sql)
+        if use_cache:
+            cached = self._load_query_cache(sql_hash)
+            if cached is not None:
+                return cached.rows  # type: ignore[return-value]
+
         query_id = self._start_query(sql)
         self._wait_query(query_id)
 
         if self._cfg.result_mode == "s3":
-            return self._fetch_s3(query_id)
-        return self._fetch_api(query_id)
+            rows = self._fetch_s3(query_id)
+        else:
+            rows = self._fetch_api(query_id)
+
+        if use_cache:
+            self._save_query_cache(sql_hash, QueryResult(
+                query_id=query_id,
+                s3_path="",
+                size_bytes=0,
+                elapsed_sec=0.0,
+                rows=rows,
+            ))
+        return rows
 
     def iter_query(
         self,
@@ -169,15 +190,17 @@ class AthenaClient:
         enforce_partition: bool = True,
         size_limit_mb: float = _DEFAULT_SIZE_LIMIT_MB,
         download_dir: Optional[Path] = None,
+        use_cache: bool = True,
     ) -> "QueryResult":
         """SQL ファイルを実行し、サイズに応じて結果をダウンロードする。
 
         Parameters
         ----------
-        sql_path        : 実行する SQL ファイルのパス
+        sql_path          : 実行する SQL ファイルのパス
         enforce_partition : year / month パーティション条件の強制チェック
-        size_limit_mb   : この MB 以内なら結果をダウンロード（デフォルト 10MB）
-        download_dir    : ダウンロード先ディレクトリ（省略時は ~/.cache/ri-analyzer/query_results/）
+        size_limit_mb     : この MB 以内なら結果をダウンロード（デフォルト 10MB）
+        download_dir      : ダウンロード先ディレクトリ（省略時は ~/.cache/ri-analyzer/query_results/）
+        use_cache         : True のとき、TTL 内のキャッシュがあれば Athena を呼ばずに返す
 
         Returns
         -------
@@ -187,6 +210,12 @@ class AthenaClient:
 
         if enforce_partition:
             _assert_partition(sql)
+
+        sql_hash = _sql_hash(sql)
+        if use_cache:
+            cached = self._load_query_cache(sql_hash)
+            if cached is not None:
+                return cached
 
         t0 = time.monotonic()
         query_id = self._start_query(sql)
@@ -205,14 +234,14 @@ class AthenaClient:
                 rows=None,
             )
 
-        # ダウンロード
+        # ダウンロード先: キャッシュ有効時はハッシュ名、無効時は query_id 名
         dest_dir = download_dir or (_CACHE_DIR / "query_results")
         dest_dir.mkdir(parents=True, exist_ok=True)
-        local_path = dest_dir / f"{query_id}.csv"
+        local_path = dest_dir / (f"{sql_hash}.csv" if use_cache else f"{query_id}.csv")
         self._download_s3(s3_path, local_path)
 
         rows = _read_csv(local_path)
-        return QueryResult(
+        result = QueryResult(
             query_id=query_id,
             s3_path=s3_path,
             size_bytes=size_bytes,
@@ -220,6 +249,9 @@ class AthenaClient:
             rows=rows,
             local_path=local_path,
         )
+        if use_cache:
+            self._save_query_cache(sql_hash, result)
+        return result
 
     # ------------------------------------------------------------------
     # 内部ヘルパー
@@ -362,15 +394,82 @@ ORDER BY ordinal_position
         tbl = self._cfg.table.replace("/", "_")
         return _CACHE_DIR / f"athena_schema_{db}_{tbl}.json"
 
+    def _query_cache_dir(self) -> Path:
+        return _CACHE_DIR / "query_results"
+
+    def _load_query_cache(self, sql_hash: str) -> Optional["QueryResult"]:
+        """TTL 内のキャッシュが存在すれば QueryResult を返す。"""
+        csv_path = self._query_cache_dir() / f"{sql_hash}.csv"
+        meta_path = self._query_cache_dir() / f"{sql_hash}.meta.json"
+
+        if not csv_path.exists() or not meta_path.exists():
+            return None
+
+        age_hours = (time.time() - meta_path.stat().st_mtime) / 3600
+        if age_hours >= self._cfg.query_cache_ttl_hours:
+            return None
+
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        rows = _read_csv(csv_path)
+        return QueryResult(
+            query_id=meta.get("query_id", ""),
+            s3_path=meta.get("s3_path", ""),
+            size_bytes=meta.get("size_bytes", 0),
+            elapsed_sec=meta.get("elapsed_sec", 0.0),
+            rows=rows,
+            local_path=csv_path,
+            from_cache=True,
+        )
+
+    def _save_query_cache(self, sql_hash: str, result: "QueryResult") -> None:
+        """クエリ結果を CSV + meta.json としてキャッシュに保存する。"""
+        if result.rows is None:
+            return  # サイズ超過でダウンロードなしの場合はキャッシュしない
+
+        cache_dir = self._query_cache_dir()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        csv_path = cache_dir / f"{sql_hash}.csv"
+        meta_path = cache_dir / f"{sql_hash}.meta.json"
+
+        # CSV 書き出し（local_path が既に正しい場所なら不要）
+        if result.local_path != csv_path:
+            _write_csv(csv_path, result.rows)
+
+        meta_path.write_text(json.dumps({
+            "query_id": result.query_id,
+            "s3_path": result.s3_path,
+            "size_bytes": result.size_bytes,
+            "elapsed_sec": result.elapsed_sec,
+            "sql_hash": sql_hash,
+            "cached_at": datetime.utcnow().isoformat(),
+        }, ensure_ascii=False), encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # ユーティリティ
 # ---------------------------------------------------------------------------
 
+def _sql_hash(sql: str) -> str:
+    """SQL 文字列の SHA256 ハッシュ（先頭16文字）をキャッシュキーとして返す。"""
+    return hashlib.sha256(sql.strip().encode("utf-8")).hexdigest()[:16]
+
+
 def _read_csv(path: Path) -> List[Dict[str, Any]]:
     """ローカル CSV ファイルを dict のリストとして読み込む。"""
     with open(path, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
+    """dict のリストを CSV ファイルに書き出す。"""
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _assert_partition(sql: str) -> None:
