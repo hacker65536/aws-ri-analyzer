@@ -34,12 +34,16 @@ aws-ri-analyzer/
 ├── requirements.txt
 ├── queries/
 │   ├── rds_running_instances.sql      # カスタム SQL サンプル
+│   ├── resource_uptime.sql            # リソース別日次稼働時間（停止時間帯調査用）
+│   ├── resource_engine_check.sql      # リソースのエンジン表記・インスタンスタイプ確認
+│   ├── resource_type_changes.sql      # CE 期間内にインスタンスタイプが変わったリソース一覧
+│   ├── resource_latest_type.sql       # 期間末時点のインスタンスタイプ確認（移行後の状態確認）
 │   └── templates/                     # SQL テンプレート（{{ variable }} 形式）
 │       ├── rds_instances.sql          # 稼働中 RDS インスタンス一覧
 │       ├── elasticache_nodes.sql      # 稼働中 ElastiCache ノード一覧
 │       ├── ri_coverage.sql            # RI カバレッジ（全月）
 │       ├── ri_coverage_period.sql     # RI カバレッジ（日付範囲指定、CE 突き合わせ用）
-│       ├── rds_resource_ids.sql       # RDS リソース ID 別 OD/RI コスト内訳
+│       ├── rds_resource_ids.sql       # RDS リソース ID 別 OD/RI 時間・コスト内訳（CE 期間フィルタ付き）
 │       ├── ce_factcheck_rds.sql       # CE 推奨の実績確認
 │       └── unused_ri.sql             # 未使用 RI 費用
 └── ri_analyzer/

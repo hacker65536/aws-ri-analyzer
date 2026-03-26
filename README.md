@@ -66,7 +66,8 @@ python main.py --service rds --section recommendations --athena
 # テンプレート一覧
 python athena_run.py --list
 
-# テンプレートを実行（year/month 省略時は CE と同じ期間を自動適用）
+# テンプレートを実行
+# year / month / start_date / end_date は CE 期間（lookback_days）から自動注入（-p で上書き可）
 python athena_run.py rds_instances -p year=2026 -p month=3
 python athena_run.py rds_resource_ids \
   -p instance_type_prefix=db.r8g -p engine="Aurora MySQL"
@@ -75,6 +76,14 @@ python athena_run.py ce_factcheck_rds -p year=2026 -p month=3 \
 
 # カスタム SQL ファイルを実行（{{ variable }} 形式で変数埋め込み可）
 python athena_run.py ./queries/my_query.sql -p year=2026 -p month=3
+
+# リソース別の稼働時間・インスタンスタイプ変更調査（queries/ 配下のカスタム SQL）
+python athena_run.py queries/resource_uptime.sql \
+  -p resource_id=my-instance-00
+python athena_run.py queries/resource_engine_check.sql \
+  -p resource_id=my-instance-00
+python athena_run.py queries/resource_type_changes.sql
+python athena_run.py queries/resource_latest_type.sql
 
 # サイズ閾値・表示行数の調整
 python athena_run.py rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 20

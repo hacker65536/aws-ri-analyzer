@@ -1,13 +1,13 @@
 -- テンプレート: RDS インスタンス リソース ID 一覧（OD / RI 内訳付き）
 -- 指定した instance_type prefix / engine でフィルタし、resource_id ごとに
 -- OD コストと RI 実効コスト（reservation_effective_cost）を集計する
--- 変数: {{ year }}, {{ month }}, {{ instance_type_prefix }}, {{ engine }}
+-- 変数: year, month, instance_type_prefix, engine, [start_date], [end_date]
 --
 -- 例:
 --   python athena_run.py rds_resource_ids \
---     -p year=2026 -p month=3 \
 --     -p instance_type_prefix=db.r8g \
---     -p engine=Aurora MySQL
+--     -p engine="Aurora MySQL"
+--   （year/month/start_date/end_date は CE 期間から自動注入）
 --
 -- コスト列の意味:
 --   od_cost          : OD 利用分の実コスト（line_item_unblended_cost）
@@ -20,7 +20,6 @@ SELECT
     product_region                  AS region,
     product_instance_type           AS instance_type,
     product_database_engine         AS engine,
-    product_deployment_option       AS deployment,
     ROUND(SUM(line_item_usage_amount), 1)
                                     AS total_hours,
     ROUND(SUM(
@@ -47,5 +46,7 @@ WHERE year = '{{ year }}'
   AND line_item_usage_type LIKE '%InstanceUsage%'
   AND product_instance_type LIKE '{{ instance_type_prefix }}.%'
   AND product_database_engine LIKE '%{{ engine }}%'
-GROUP BY 1, 2, 3, 4, 5, 6
+  AND line_item_usage_start_date >= TIMESTAMP '{{ start_date }} 00:00:00'
+  AND line_item_usage_start_date <  TIMESTAMP '{{ end_date }} 00:00:00'
+GROUP BY 1, 2, 3, 4, 5
 ORDER BY total_hours DESC

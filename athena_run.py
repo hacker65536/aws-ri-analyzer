@@ -64,6 +64,14 @@ def ce_period_months(lookback_days: int) -> List[Tuple[int, int]]:
     return months
 
 
+def ce_period_dates(lookback_days: int) -> Tuple[str, str]:
+    """CE と同じ (start_date, end_date) を YYYY-MM-DD 形式で返す。"""
+    now_utc = datetime.now(timezone.utc)
+    end_date = (now_utc - timedelta(hours=48)).date()
+    start_date = end_date - timedelta(days=lookback_days)
+    return str(start_date), str(end_date)
+
+
 def list_templates() -> list[tuple[str, str]]:
     """(テンプレート名, 説明1行目) のリストを返す。"""
     result = []
@@ -289,6 +297,10 @@ def main() -> None:
         # config の database / table を既定値として設定（-p で上書き可能）
         base_params.setdefault("database", cfg.athena.database)
         base_params.setdefault("table", cfg.athena.table)
+        # start_date / end_date を CE 期間から自動注入（-p で上書き可能）
+        ce_start, ce_end = ce_period_dates(cfg.analysis.lookback_days)
+        base_params.setdefault("start_date", ce_start)
+        base_params.setdefault("end_date", ce_end)
     except ValueError as e:
         info(f"[ERROR] {e}")
         sys.exit(1)
@@ -297,7 +309,8 @@ def main() -> None:
     if "year" not in base_params and "month" not in base_params:
         months = ce_period_months(cfg.analysis.lookback_days)
         info(f"[INFO] CE 期間     : lookback={cfg.analysis.lookback_days}d → "
-             f"{months[0][0]}-{months[0][1]:02d} 〜 {months[-1][0]}-{months[-1][1]:02d}")
+             f"{months[0][0]}-{months[0][1]:02d} 〜 {months[-1][0]}-{months[-1][1]:02d} "
+             f"({ce_start} 〜 {ce_end})")
     else:
         # 両方指定されていない場合はエラー
         if "year" not in base_params or "month" not in base_params:
