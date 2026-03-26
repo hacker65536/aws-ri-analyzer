@@ -14,12 +14,27 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from ri_analyzer.fetchers.cost_explorer import RiCoverageRecord
-from ri_analyzer.analyzers.utilization import _parse_instance_family, _norm_factor
+from ri_analyzer.analyzers.utilization import _parse_instance_family, _norm_factor_for_engine
+
+# ElastiCache: Redis と Valkey は size-flexible RI で互換性があるため同一グループとして扱う
+_ELASTICACHE_COMPATIBLE_ENGINES = {"redis", "valkey"}
+_ELASTICACHE_UNIFIED_PLATFORM = "Redis/Valkey"
+
+
+def _normalize_platform(platform: str) -> str:
+    """Redis / Valkey を統一プラットフォーム名に正規化する"""
+    if platform.lower() in _ELASTICACHE_COMPATIBLE_ENGINES:
+        return _ELASTICACHE_UNIFIED_PLATFORM
+    return platform
 
 
 @dataclass
 class CoverageSummary:
-    """アカウント × リージョン × インスタンスタイプ × プラットフォーム の集計"""
+    """アカウント × リージョン × インスタンスタイプ × プラットフォーム の集計
+
+    NUs はレコードごとにエンジン別係数を掛けて事前集計済み。
+    Redis/Valkey 混在グループでは各エンジンの係数が正しく反映される。
+    """
     account_id: str
     region: str
     instance_type: str
@@ -27,22 +42,9 @@ class CoverageSummary:
     covered_hours: float
     on_demand_hours: float
     total_hours: float
-
-    @property
-    def norm_factor(self) -> float:
-        return _norm_factor(self.instance_type)
-
-    @property
-    def covered_nus(self) -> float:
-        return self.covered_hours * self.norm_factor
-
-    @property
-    def on_demand_nus(self) -> float:
-        return self.on_demand_hours * self.norm_factor
-
-    @property
-    def total_nus(self) -> float:
-        return self.total_hours * self.norm_factor
+    covered_nus: float       # 事前計算済み（エンジン別係数を使用）
+    on_demand_nus: float
+    total_nus: float
 
     @property
     def coverage_pct(self) -> float:
@@ -65,16 +67,22 @@ def analyze(records: list[RiCoverageRecord]) -> list[CoverageSummary]:
     期間をまたぐレコードを集計し、CoverageSummary のリストを返す。
     on_demand_hours > 0 のものが「RI 未カバーあり」を意味する。
     """
-    # (account_id, region, instance_type) → 集計値
+    # (account_id, region, instance_type, normalized_platform) → 集計値
     agg: defaultdict[tuple, dict] = defaultdict(
-        lambda: {"covered": 0.0, "on_demand": 0.0, "total": 0.0}
+        lambda: {"covered": 0.0, "on_demand": 0.0, "total": 0.0,
+                 "covered_nus": 0.0, "on_demand_nus": 0.0, "total_nus": 0.0}
     )
 
     for rec in records:
-        key = (rec.account_id, rec.region, rec.instance_type, rec.platform)
-        agg[key]["covered"]   += rec.covered_hours
-        agg[key]["on_demand"] += rec.on_demand_hours
-        agg[key]["total"]     += rec.total_hours
+        key = (rec.account_id, rec.region, rec.instance_type, _normalize_platform(rec.platform))
+        # エンジン別係数で NUs を算出（Redis と Valkey は係数が異なる）
+        factor = _norm_factor_for_engine(rec.instance_type, rec.platform)
+        agg[key]["covered"]       += rec.covered_hours
+        agg[key]["on_demand"]     += rec.on_demand_hours
+        agg[key]["total"]         += rec.total_hours
+        agg[key]["covered_nus"]   += rec.covered_hours * factor
+        agg[key]["on_demand_nus"] += rec.on_demand_hours * factor
+        agg[key]["total_nus"]     += rec.total_hours * factor
 
     summaries = [
         CoverageSummary(
@@ -85,12 +93,16 @@ def analyze(records: list[RiCoverageRecord]) -> list[CoverageSummary]:
             covered_hours   = v["covered"],
             on_demand_hours = v["on_demand"],
             total_hours     = v["total"],
+            covered_nus     = v["covered_nus"],
+            on_demand_nus   = v["on_demand_nus"],
+            total_nus       = v["total_nus"],
         )
         for key, v in agg.items()
     ]
 
-    # platform → instance family → サイズ（norm_factor 昇順）→ account_id
+    # platform → instance family → サイズ（NU昇順）→ account_id
     return sorted(
         summaries,
-        key=lambda s: (s.platform, _parse_instance_family(s.instance_type), s.norm_factor, s.account_id),
+        key=lambda s: (s.platform, _parse_instance_family(s.instance_type),
+                       s.total_nus / s.total_hours if s.total_hours > 0 else 0, s.account_id),
     )

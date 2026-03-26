@@ -300,6 +300,157 @@ def fetch_ri_coverage(
     return records
 
 
+# ──────────────────────────────────────────────
+# Recommendations
+# ──────────────────────────────────────────────
+
+@dataclass
+class RiRecommendationDetail:
+    """1インスタンスタイプあたりの購入推奨レコード"""
+    instance_type: str
+    region: str
+    platform: str           # Redis / Valkey / Aurora MySQL / etc.
+    count: int              # 推奨購入数
+    normalized_units: float
+    upfront_cost: float
+    estimated_monthly_savings: float
+    estimated_savings_pct: float
+    breakeven_months: float
+    avg_utilization: float  # 直近の平均使用率（推奨根拠）
+
+
+@dataclass
+class RiRecommendationGroup:
+    """サービス × 期間 × 支払いタイプ単位の推奨グループ"""
+    service: str
+    term: str           # "ONE_YEAR" / "THREE_YEARS"
+    payment_option: str # "ALL_UPFRONT" / "PARTIAL_UPFRONT" / "NO_UPFRONT"
+    details: list[RiRecommendationDetail]
+    total_monthly_savings: float
+    total_savings_pct: float
+    currency: str
+
+
+_CE_LOOKBACK_MAP: dict[int, str] = {7: "SEVEN_DAYS", 30: "THIRTY_DAYS", 60: "SIXTY_DAYS"}
+
+# サービスキー → InstanceDetails 内のキー名
+_CE_INSTANCE_DETAIL_KEY: dict[str, str] = {
+    "rds":         "RDSInstanceDetails",
+    "elasticache": "ElastiCacheInstanceDetails",
+    "opensearch":  "ESInstanceDetails",
+}
+
+
+def _parse_instance_detail(service: str, instance_details: dict[str, Any]) -> tuple[str, str, str]:
+    """InstanceDetails から (instance_type, region, platform) を返す"""
+    key = _CE_INSTANCE_DETAIL_KEY.get(service, "")
+    d = instance_details.get(key, {})
+    if service == "rds":
+        instance_type = d.get("InstanceType", "")
+        region        = d.get("Region", "")
+        engine        = d.get("DatabaseEngine", "")
+        deploy        = d.get("DeploymentOption", "")
+        platform      = f"{engine} {deploy}".strip() if deploy else engine
+    elif service == "elasticache":
+        instance_type = d.get("NodeType", "")
+        region        = d.get("Region", "")
+        platform      = d.get("ProductDescription", "")
+    else:
+        instance_type = d.get("InstanceType", d.get("NodeType", ""))
+        region        = d.get("Region", "")
+        platform      = ""
+    return instance_type, region, platform
+
+
+def fetch_ri_recommendations(
+    payer_profile: str,
+    service: str,
+    term: str = "ONE_YEAR",
+    payment_option: str = "ALL_UPFRONT",
+    lookback_days: int = 30,
+) -> list[RiRecommendationGroup]:
+    """
+    CE GetReservationPurchaseRecommendation を呼び出し、
+    RI 購入推奨を返す。
+
+    Parameters
+    ----------
+    payer_profile  : Payer アカウントのプロファイル名
+    service        : 対象サービスキー ("rds" / "elasticache")
+    term           : "ONE_YEAR" / "THREE_YEARS"
+    payment_option : "ALL_UPFRONT" / "PARTIAL_UPFRONT" / "NO_UPFRONT"
+    lookback_days  : 7 / 30 / 60（CE が受け付ける値のみ）
+    """
+    ce_service = _CE_SERVICE_NAMES.get(service)
+    if not ce_service:
+        raise ValueError(f"未対応のサービスです: {service}。対応: {list(_CE_SERVICE_NAMES)}")
+
+    lookback = _CE_LOOKBACK_MAP.get(lookback_days, "THIRTY_DAYS")
+
+    session = boto3.Session(profile_name=payer_profile, region_name="us-east-1")
+    ce = session.client("ce")
+
+    groups: list[RiRecommendationGroup] = []
+    next_token: str | None = None
+
+    while True:
+        kwargs: dict[str, Any] = dict(
+            Service=ce_service,
+            TermInYears=term,
+            PaymentOption=payment_option,
+            LookbackPeriodInDays=lookback,
+            AccountScope="PAYER",
+        )
+        if next_token:
+            kwargs["NextPageToken"] = next_token
+
+        try:
+            resp = ce.get_reservation_purchase_recommendation(**kwargs)
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            if code in ("AccessDeniedException", "OptInRequired"):
+                raise PermissionError(
+                    f"Cost Explorer へのアクセスが拒否されました ({code})。"
+                    "Payer アカウントのプロファイルと IAM 権限を確認してください。"
+                ) from e
+            raise
+
+        for rec in resp.get("Recommendations", []):
+            summary = rec.get("RecommendationSummary", {})
+            details: list[RiRecommendationDetail] = []
+            for d in rec.get("RecommendationDetails", []):
+                itype, region, platform = _parse_instance_detail(
+                    service, d.get("InstanceDetails", {})
+                )
+                details.append(RiRecommendationDetail(
+                    instance_type             = itype,
+                    region                    = region,
+                    platform                  = platform,
+                    count                     = int(float(d.get("RecommendedNumberOfInstancesToPurchase", 0))),
+                    normalized_units          = float(d.get("RecommendedNormalizedUnitsToPurchase", 0)),
+                    upfront_cost              = float(d.get("UpfrontCost", 0)),
+                    estimated_monthly_savings = float(d.get("EstimatedMonthlySavingsAmount", 0)),
+                    estimated_savings_pct     = float(d.get("EstimatedMonthlySavingsPercentage", 0)),
+                    breakeven_months          = float(d.get("EstimatedBreakevenInMonths", 0)),
+                    avg_utilization           = float(d.get("AverageUtilization", 0)),
+                ))
+            groups.append(RiRecommendationGroup(
+                service               = service,
+                term                  = rec.get("Term", term),
+                payment_option        = rec.get("PaymentOption", payment_option),
+                details               = details,
+                total_monthly_savings = float(summary.get("TotalEstimatedMonthlySavingsAmount", 0)),
+                total_savings_pct     = float(summary.get("TotalEstimatedMonthlySavingsPercentage", 0)),
+                currency              = summary.get("CurrencyCode", "USD"),
+            ))
+
+        next_token = resp.get("NextPageToken")
+        if not next_token:
+            break
+
+    return groups
+
+
 def _parse_subscription(sub_id: str, attrs: dict[str, Any]) -> RiSubscription:
     """CE Attributes から RiSubscription を組み立てる"""
 

@@ -22,7 +22,7 @@ from botocore.exceptions import TokenRetrievalError, SSOTokenLoadError
 from ri_analyzer.cache import CacheStore
 from ri_analyzer.config import Config
 from ri_analyzer.profile_resolver import resolve_profile
-from ri_analyzer.fetchers.cost_explorer import fetch_ri_subscriptions, fetch_ri_coverage, _ce_time_period
+from ri_analyzer.fetchers.cost_explorer import fetch_ri_subscriptions, fetch_ri_coverage, fetch_ri_recommendations, _ce_time_period
 from ri_analyzer.analyzers import expiration as exp_analyzer
 from ri_analyzer.analyzers import coverage as cov_analyzer
 from ri_analyzer.analyzers import utilization as util_analyzer
@@ -30,7 +30,7 @@ from ri_analyzer import reporter
 
 
 _ALL_SERVICES = ["rds", "elasticache", "opensearch"]
-_ALL_SECTIONS = ["expiration", "coverage", "utilization"]
+_ALL_SECTIONS = ["expiration", "coverage", "utilization", "recommendations"]
 
 
 def _prompt_multiselect(label: str, choices: list[str]) -> list[str]:
@@ -76,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=_ALL_SECTIONS,
         default=None,
         metavar="SECTION",
-        help="Sections to display (default: all). e.g. --section expiration coverage",
+        help="Sections to display (default: all). e.g. --section expiration coverage recommendations",
     )
     p.add_argument(
         "--max-util",
@@ -255,6 +255,38 @@ def main() -> None:
         if "utilization" in sections:
             summaries = util_analyzer.summarize(util_records)
             reporter.print_utilization(summaries, max_util=args.max_util, show_sub_id=args.show_sub_id)
+
+        if "recommendations" in sections:
+            rec_cfg = cfg.recommendation
+            rec_key = f"recommendations:{payer_profile}:{svc}:{rec_cfg.term}:{rec_cfg.payment_option}:{rec_cfg.lookback_days}"
+            cached_rec = None if args.no_cache else cache.get(rec_key)
+            if cached_rec is not None:
+                rec_groups = cached_rec
+                print(f"  Recommendations (GetReservationPurchaseRecommendation): {sum(len(g.details) for g in rec_groups)} item(s)  [cache {cache.created_at(rec_key)}]")
+            else:
+                print("  Fetching recommendations (GetReservationPurchaseRecommendation)...", end="", flush=True)
+                try:
+                    rec_groups = fetch_ri_recommendations(
+                        payer_profile=payer_profile,
+                        service=svc,
+                        term=rec_cfg.term,
+                        payment_option=rec_cfg.payment_option,
+                        lookback_days=rec_cfg.lookback_days,
+                    )
+                except (TokenRetrievalError, SSOTokenLoadError):
+                    _sso_expired_error(payer_profile)
+                except PermissionError as e:
+                    print(f"\n  [WARN] Skipped recommendations: {e}")
+                    rec_groups = []
+                else:
+                    cache.set(rec_key, rec_groups)
+                print(f" {sum(len(g.details) for g in rec_groups)} item(s)")
+            reporter.print_recommendations(
+                rec_groups,
+                service=svc,
+                term=rec_cfg.term,
+                payment_option=rec_cfg.payment_option,
+            )
 
     print()
 

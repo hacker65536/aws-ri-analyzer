@@ -2,16 +2,18 @@
 
 ## 現在の状態
 
-RDS + ElastiCache の RI 分析が動作確認済み。キャッシュ機構・カバレッジのエンジン別表示・絞り込みフィルタを実装済み。
+RDS + ElastiCache の RI 分析が動作確認済み。
+ElastiCache の Redis/Valkey 互換 NU 計算と Recommendations セクションを追加。
 
 ### 直近のコミット
 
 ```
+（今回のコミット） Add ElastiCache Redis/Valkey NU compatibility and Recommendations section
+33b2ed6 Update HANDOFF.md for session handoff
 b164500 Add ElastiCache support
 cffbbbf Add cache, coverage engine/region/filter improvements
 749451a Add coverage family summary, SSO error handling, non-SSO profile support
 5d06524 Enhance utilization display with count, NUs, family summary
-b6f1e5d Initial commit: RDS RI analyzer MVP
 ```
 
 ---
@@ -22,7 +24,7 @@ b6f1e5d Initial commit: RDS RI analyzer MVP
 
 ```bash
 --service rds elasticache      # 複数指定可（rds / elasticache 実装済み、opensearch は未実装）
---section expiration coverage utilization
+--section expiration coverage utilization recommendations
 --max-util 80                  # 利用率 <= PCT% のみ表示
 --max-coverage 90              # カバレッジ <= PCT% のみ表示
 --engine aurora                # カバレッジをエンジンで絞り込み（部分一致・大文字小文字無視）
@@ -49,23 +51,29 @@ payer:
 
 analysis:
   services: [rds, elasticache]
-  sections: [expiration, coverage, utilization]
+  sections: [expiration, coverage, utilization, recommendations]
   regions: [ap-northeast-1]
   lookback_days: 7
   expiration_warn_days: 90
   cache_ttl_hours: 24
+
+recommendation:
+  term: ONE_YEAR          # ONE_YEAR / THREE_YEARS
+  payment_option: ALL_UPFRONT
+  lookback_days: 30       # 7 / 30 / 60
 ```
 
 ### Coverage 表示の構造
 
 ```
-## Aurora MySQL              ← database engine（太字・シアン区切り線）
-  [db.r6g.*]                 ← instance family
+## Redis/Valkey              ← ElastiCache は Redis と Valkey を統合表示
+  [cache.r6g.*]              ← instance family（cache. プレフィックス自動判定）
     Account ID  Instance Type  Region  Coverage  RI (hrs)  OD (hrs)  Total (hrs)
     ...（個別行: raw hours）
-    (total, NUs) db.r6g.*  ...N  ...N  ...N     ← family サマリ: Normalized Units
+    (total, NUs) cache.r6g.*  ...N  ...N  ...N  ← NUs はエンジン別係数適用済み
 ```
 
+- Redis NU 係数: `large=4`, Valkey NU 係数: `large=3.2`（Redis の 0.8 倍）
 - エンジン次元の CE GroupBy キー: RDS=`DATABASE_ENGINE`, ElastiCache=`CACHE_ENGINE`
 - レスポンス属性キー: RDS=`databaseEngine`, ElastiCache=`cacheEngine`
 - マッピングは `cost_explorer.py` の `_CE_ENGINE_DIMENSION` / `_CE_ENGINE_ATTR`
@@ -109,7 +117,13 @@ analysis:
 `_CE_SERVICE_NAMES` にはすでに登録済み。
 ElastiCache と同様にガードを外し、エンジン次元のマッピングを追加すれば動く見込み。
 
-### 3. Redshift 対応（優先度低）
+### 3. RDS の size-flexible NU 計算（優先度低）
+
+MySQL / PostgreSQL / MariaDB は size-flexible RI が有効。
+ElastiCache で実装した Redis/Valkey 統合と同様に、RDS ファミリー内でも NU 加重集計が本来は必要。
+現状はエンジンをまたいだ NU 計算は未対応（hours ベースのカバレッジ計算のみ）。
+
+### 4. Redshift 対応（優先度低）
 
 ---
 

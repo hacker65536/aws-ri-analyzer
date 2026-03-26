@@ -18,6 +18,13 @@ class PayerConfig:
 
 
 @dataclass
+class RecommendationConfig:
+    term: str = "ONE_YEAR"               # ONE_YEAR / THREE_YEARS
+    payment_option: str = "ALL_UPFRONT"  # ALL_UPFRONT / PARTIAL_UPFRONT / NO_UPFRONT
+    lookback_days: int = 30              # CE が受け付ける値: 7 / 30 / 60
+
+
+@dataclass
 class AnalysisConfig:
     services: Optional[List[str]]       # None = not configured (will prompt)
     sections: Optional[List[str]]       # None = not configured (will prompt)
@@ -31,7 +38,12 @@ class AnalysisConfig:
 class Config:
     payer: PayerConfig
     analysis: AnalysisConfig
+    recommendation: RecommendationConfig = None  # type: ignore[assignment]
     _path: Path = DEFAULT_CONFIG_PATH
+
+    def __post_init__(self) -> None:
+        if self.recommendation is None:
+            self.recommendation = RecommendationConfig()
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":
@@ -47,6 +59,7 @@ class Config:
             raise ValueError("config.yaml に payer.account_id が設定されていません")
 
         analysis_raw = raw.get("analysis", {})
+        rec_raw = raw.get("recommendation", {})
         cfg = cls(
             payer=PayerConfig(
                 account_id=str(payer_raw["account_id"]),
@@ -59,6 +72,11 @@ class Config:
                 lookback_days=analysis_raw.get("lookback_days", 7),
                 expiration_warn_days=analysis_raw.get("expiration_warn_days", 90),
                 cache_ttl_hours=float(analysis_raw.get("cache_ttl_hours", 24.0)),
+            ),
+            recommendation=RecommendationConfig(
+                term=rec_raw.get("term", "ONE_YEAR"),
+                payment_option=rec_raw.get("payment_option", "ALL_UPFRONT"),
+                lookback_days=int(rec_raw.get("lookback_days", 30)),
             ),
         )
         cfg._path = config_path
@@ -78,6 +96,11 @@ class Config:
                 "lookback_days": self.analysis.lookback_days,
                 "expiration_warn_days": self.analysis.expiration_warn_days,
                 "cache_ttl_hours": self.analysis.cache_ttl_hours,
+            },
+            "recommendation": {
+                "term": self.recommendation.term,
+                "payment_option": self.recommendation.payment_option,
+                "lookback_days": self.recommendation.lookback_days,
             },
         }
         with open(config_path, "w") as f:

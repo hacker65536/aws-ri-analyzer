@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from ri_analyzer.analyzers.expiration import ExpirationResult
 from ri_analyzer.analyzers.coverage import CoverageSummary
-from ri_analyzer.analyzers.utilization import UtilizationSummary, _parse_instance_family, _norm_factor
+from ri_analyzer.analyzers.utilization import UtilizationSummary, _parse_instance_family, _parse_instance_prefix, _norm_factor_for_engine
+from ri_analyzer.fetchers.cost_explorer import RiRecommendationGroup
 
 _RED    = "\033[91m"
 _YELLOW = "\033[93m"
@@ -143,7 +144,8 @@ def print_coverage(
 
         for family in families:
             fam_group = [s for s in plat_group if _parse_instance_family(s.instance_type) == family]
-            print(f"\n  [db.{family}.*]")
+            prefix = _parse_instance_prefix(fam_group[0].instance_type)
+            print(f"\n  [{prefix}.{family}.*]")
             print(col_header)
             print(col_sep)
 
@@ -174,7 +176,7 @@ def print_coverage(
                     pct_str = _c(f"{cov_pct:8.1f}%", _RED)
                 print(
                     _c(
-                        f"  {'(total, NUs)':<14}  {'db.' + family + '.*':<20}  {'':<16}"
+                        f"  {'(total, NUs)':<14}  {prefix + '.' + family + '.*':<20}  {'':<16}"
                         f"  {cov_pct:8.1f}%  {total_covered_nus:>8.1f}N  {total_od_nus:>8.1f}N  {total_nus:>9.1f}N",
                         _CYAN,
                     )
@@ -278,7 +280,7 @@ def print_utilization(
             # family サマリ行（2件以上の場合のみ表示）
             if len(fam_group) >= 2:
                 total_nus     = sum(s.normalized_units for s in fam_group)
-                unused_nus    = sum(s.total_unused_hours * _norm_factor(s.instance_type) for s in fam_group)
+                unused_nus    = sum(s.total_unused_hours * _norm_factor_for_engine(s.instance_type, s.platform) for s in fam_group)
                 total_od      = sum(s.total_on_demand_cost for s in fam_group)
                 total_ri      = sum(s.total_amortized_fee for s in fam_group)
                 total_sav     = sum(s.total_net_savings for s in fam_group)
@@ -286,12 +288,66 @@ def print_utilization(
                     sum(s.avg_utilization_pct * s.normalized_units for s in fam_group)
                     / total_nus
                 ) if total_nus > 0 else 0.0
+                prefix = _parse_instance_prefix(fam_group[0].instance_type)
                 sub_id_pad = " " * 18 if show_sub_id else ""
                 print(
                     _c(
-                        f"  {sub_id_pad}{'db.' + family + '.*':<20}    -  {total_nus:>6.1f}"
+                        f"  {sub_id_pad}{prefix + '.' + family + '.*':<20}    -  {total_nus:>6.1f}"
                         f"  {'(total)':<16}  {avg_pct:>8.1f}%  {unused_nus:>7.1f} NUs"
                         f"  {total_od:>10.2f}  {total_ri:>10.2f}  {total_sav:>12.2f}",
                         _CYAN,
                     )
                 )
+
+
+# ──────────────────────────────────────────────
+# Recommendations
+# ──────────────────────────────────────────────
+
+def print_recommendations(
+    groups: list[RiRecommendationGroup],
+    service: str,
+    term: str,
+    payment_option: str,
+) -> None:
+    term_label    = "1yr" if term == "ONE_YEAR" else "3yr"
+    payment_label = payment_option.replace("_", " ").title()
+    _header(f"RI Recommendations  ({term_label} / {payment_label})")
+
+    if not groups:
+        print("\n  No recommendations available.")
+        return
+
+    col_header = (
+        f"\n  {'Instance Type':<22}  {'Platform':<16}  {'Region':<16}"
+        f"  {'Cnt':>3}  {'NUs':>6}  {'Upfront ($)':>11}  {'Savings/mo':>11}"
+        f"  {'Savings%':>8}  {'Breakeven':>9}"
+    )
+    col_sep = f"  {'-' * 108}"
+
+    for group in groups:
+        print(f"\n  [{service.upper()}]  {group.currency}")
+        print(col_header)
+        print(col_sep)
+
+        sorted_details = sorted(
+            group.details,
+            key=lambda d: (-d.estimated_monthly_savings, d.instance_type),
+        )
+        for d in sorted_details:
+            savings_str = _c(f"${d.estimated_monthly_savings:>10.2f}", _GREEN)
+            print(
+                f"  {d.instance_type:<22}  {d.platform:<16}  {d.region:<16}"
+                f"  {d.count:>3}  {d.normalized_units:>6.1f}  ${d.upfront_cost:>10.2f}"
+                f"  {savings_str}  {d.estimated_savings_pct:>7.1f}%  {d.breakeven_months:>7.1f} mo"
+            )
+
+        print()
+        total_str = _c(f"${group.total_monthly_savings:,.2f}", _GREEN)
+        print(
+            _c(
+                f"  Total estimated monthly savings: {total_str}"
+                f"  ({group.total_savings_pct:.1f}%)",
+                _BOLD,
+            )
+        )

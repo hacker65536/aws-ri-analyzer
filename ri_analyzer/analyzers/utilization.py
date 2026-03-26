@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from ri_analyzer.fetchers.cost_explorer import RiUtilizationRecord
 
-# AWS 正規化ユニット係数テーブル（RDS / ElastiCache 共通）
+# AWS 正規化ユニット係数テーブル（RDS / ElastiCache Redis OSS 共通）
 _NORM_FACTOR: dict[str, float] = {
     "nano":     0.25,
     "micro":    0.5,
@@ -17,6 +17,7 @@ _NORM_FACTOR: dict[str, float] = {
     "xlarge":   8,
     "2xlarge":  16,
     "4xlarge":  32,
+    "6xlarge":  48,
     "8xlarge":  64,
     "10xlarge": 80,
     "12xlarge": 96,
@@ -24,6 +25,30 @@ _NORM_FACTOR: dict[str, float] = {
     "24xlarge": 192,
     "32xlarge": 256,
 }
+
+# Valkey の正規化ユニット係数（Redis OSS の 0.8 倍）
+# https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/CacheNodes.Reserved.html
+_VALKEY_NORM_FACTOR: dict[str, float] = {
+    "micro":    0.4,
+    "small":    0.8,
+    "medium":   1.6,
+    "large":    3.2,
+    "xlarge":   6.4,
+    "2xlarge":  12.8,
+    "4xlarge":  25.6,
+    "6xlarge":  38.4,
+    "8xlarge":  51.2,
+    "10xlarge": 64.0,
+    "12xlarge": 76.8,
+    "16xlarge": 102.4,
+    "24xlarge": 153.6,
+}
+
+
+def _parse_instance_prefix(instance_type: str) -> str:
+    """'db.r5.large' → 'db', 'cache.r6g.large' → 'cache'"""
+    parts = instance_type.split(".")
+    return parts[0] if len(parts) >= 3 else "db"
 
 
 def _parse_instance_family(instance_type: str) -> str:
@@ -40,6 +65,16 @@ def _parse_instance_size(instance_type: str) -> str:
 
 def _norm_factor(instance_type: str) -> float:
     size = _parse_instance_size(instance_type)
+    return _NORM_FACTOR.get(size, 1.0)
+
+
+def _norm_factor_for_engine(instance_type: str, platform: str) -> float:
+    """エンジン（platform）を考慮した正規化係数を返す。
+    Valkey は Redis OSS の 0.8 倍の係数を使用する。
+    """
+    size = _parse_instance_size(instance_type)
+    if platform.lower() == "valkey":
+        return _VALKEY_NORM_FACTOR.get(size, 1.0)
     return _NORM_FACTOR.get(size, 1.0)
 
 
@@ -65,8 +100,8 @@ class UtilizationSummary:
 
     @property
     def normalized_units(self) -> float:
-        """count × 正規化係数（例: db.r5.large x10 → 10 × 4 = 40）"""
-        return self.count * _norm_factor(self.instance_type)
+        """count × 正規化係数（エンジン考慮。Valkey は Redis の 0.8 倍）"""
+        return self.count * _norm_factor_for_engine(self.instance_type, self.platform)
 
     @property
     def total_unused_hours(self) -> float:
