@@ -201,18 +201,42 @@ def print_coverage(
 # Utilization
 # ──────────────────────────────────────────────
 
+# CE GetReservationUtilization が返す短縮 platform 名を
+# GetReservationCoverage と同じ命名に正規化するマッピング。
+# フィルタ時にこのマッピングを通すことで --engine の挙動を両セクションで統一する。
+_UTIL_PLATFORM_NORMALIZE: dict[str, str] = {
+    "aurora": "aurora mysql",
+}
+
+
+def _normalize_util_platform(platform: str) -> str:
+    lower = platform.lower()
+    return _UTIL_PLATFORM_NORMALIZE.get(lower, lower)
+
+
 def print_utilization(
     summaries: list[UtilizationSummary],
     max_util: float | None = None,
+    engines: list[str] | None = None,
+    families: list[str] | None = None,
     show_sub_id: bool = False,
 ) -> None:
     title = "RI Utilization  (Cost Explorer)"
     if max_util is not None:
         title += f"  [filter: util <= {max_util}%]"
+    if engines:
+        title += f"  [engine: {', '.join(engines)}]"
+    if families:
+        title += f"  [family: {', '.join(families)}]"
     _header(title)
 
     if max_util is not None:
         summaries = [s for s in summaries if s.avg_utilization_pct <= max_util]
+    if engines:
+        engines_lower = [e.lower() for e in engines]
+        summaries = [s for s in summaries if any(e in _normalize_util_platform(s.platform) for e in engines_lower)]
+    if families:
+        summaries = [s for s in summaries if _parse_instance_family(s.instance_type) in families]
 
     if not summaries:
         print("\n  No data.")
@@ -309,10 +333,17 @@ def print_recommendations(
     service: str,
     term: str,
     payment_option: str,
+    engines: list[str] | None = None,
+    families: list[str] | None = None,
 ) -> None:
     term_label    = "1yr" if term == "ONE_YEAR" else "3yr"
     payment_label = payment_option.replace("_", " ").title()
-    _header(f"RI Recommendations  ({term_label} / {payment_label})")
+    title = f"RI Recommendations  ({term_label} / {payment_label})"
+    if engines:
+        title += f"  [engine: {', '.join(engines)}]"
+    if families:
+        title += f"  [family: {', '.join(families)}]"
+    _header(title)
 
     if not groups:
         print("\n  No recommendations available.")
@@ -325,15 +356,25 @@ def print_recommendations(
     )
     col_sep = f"  {'-' * 108}"
 
-    for group in groups:
-        print(f"\n  [{service.upper()}]  {group.currency}")
-        print(col_header)
-        print(col_sep)
+    engines_lower = [e.lower() for e in engines] if engines else None
 
+    for group in groups:
         sorted_details = sorted(
             group.details,
             key=lambda d: (-d.estimated_monthly_savings, d.instance_type),
         )
+        if engines_lower:
+            sorted_details = [d for d in sorted_details if any(e in d.platform.lower() for e in engines_lower)]
+        if families:
+            sorted_details = [d for d in sorted_details if _parse_instance_family(d.instance_type) in families]
+
+        if not sorted_details:
+            continue
+
+        print(f"\n  [{service.upper()}]  {group.currency}")
+        print(col_header)
+        print(col_sep)
+
         for d in sorted_details:
             savings_str = _c(f"${d.estimated_monthly_savings:>10.2f}", _GREEN)
             print(
@@ -343,11 +384,11 @@ def print_recommendations(
             )
 
         print()
-        total_str = _c(f"${group.total_monthly_savings:,.2f}", _GREEN)
+        filtered_total = sum(d.estimated_monthly_savings for d in sorted_details)
+        total_str = _c(f"${filtered_total:,.2f}", _GREEN)
         print(
             _c(
-                f"  Total estimated monthly savings: {total_str}"
-                f"  ({group.total_savings_pct:.1f}%)",
+                f"  Total estimated monthly savings: {total_str}",
                 _BOLD,
             )
         )

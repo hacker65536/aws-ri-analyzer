@@ -283,7 +283,7 @@ start = end - lookback_days
 | upfront_cost | 初期費用（$） |
 | estimated_monthly_savings | 月次節約見込み額（$） |
 | estimated_savings_pct | 節約率（%） |
-| breakeven_months | 投資回収期間（月） |
+| breakeven_months | 投資回収期間（月）。API フィールド名は `EstimatedBreakEvenInMonths`（"Even" の E が大文字） |
 | avg_utilization | 直近の平均使用率（推奨根拠） |
 
 サービスごとの `InstanceDetails` キー:
@@ -378,11 +378,14 @@ micro=0.4 / small=0.8 / medium=1.6 / large=3.2 / xlarge=6.4 / 2xlarge=12.8 / ...
 - カラー出力（ANSI）。`--no-color` または `set_color(False)` で無効化
 - ファイル出力時は `--no-color` を推奨（ANSI コードが混入するため）
 - カラム幅は ASCII 文字で固定しているため日本語文字列はカラムがずれる
-- `print_utilization(summaries, max_util=None, show_sub_id=False)`
+- `print_utilization(summaries, max_util=None, engines=None, families=None, show_sub_id=False)`
   - `max_util` 指定時は avg_utilization_pct がその値以下のレコードのみ表示
+  - `engines` 指定時はエンジンで絞り込み（部分一致・大文字小文字無視）
+  - `families` 指定時はインスタンスファミリーで絞り込み（完全一致）
   - `show_sub_id=True` で Subscription ID 列を追加表示
   - instance family 単位でサマリ行を表示（2件以上の場合）
   - 詳細行の `Unused` 列は `hrs` 単位、サマリ行は `NUs` 単位（正規化ユニット時間）
+  - **platform 正規化**: `GetReservationUtilization` が返す短縮 platform 名（例: `"Aurora"`）を `_UTIL_PLATFORM_NORMALIZE` で Coverage と同じ命名（`"Aurora MySQL"`）に正規化してからフィルタを適用する。これにより `--engine "aurora mysql"` が Coverage / Utilization の両セクションで一貫して動作する。
 - `print_coverage(summaries, max_coverage=None, engines=None, families=None)`
   - `max_coverage` 指定時は coverage_pct がその値以下のレコードのみ表示
   - `engines` 指定時はデータベースエンジンで絞り込み（部分一致・大文字小文字無視）
@@ -392,10 +395,13 @@ micro=0.4 / small=0.8 / medium=1.6 / large=3.2 / xlarge=6.4 / 2xlarge=12.8 / ...
   - ファミリーラベルはインスタンスタイプのプレフィックスを動的取得（`db.` / `cache.`）
   - 詳細行の列: Account ID / Instance Type / Region / Coverage / RI (hrs) / OD (hrs) / Total (hrs)
   - family サマリ行（2件以上の場合）はラベルが `(total, NUs)`、値は NUs 単位（エンジン別係数適用済み）
-- `print_recommendations(groups, service, term, payment_option)`
+- `print_recommendations(groups, service, term, payment_option, engines=None, families=None)`
   - AWS CE が算出した購入推奨を節約額降順で表示
+  - `engines` 指定時はエンジンで絞り込み（部分一致・大文字小文字無視）。`platform` は `"Aurora MySQL Single-AZ"` 形式なので正規化不要
+  - `families` 指定時はインスタンスファミリーで絞り込み（完全一致）
+  - フィルタ後の details から合計節約額を再計算して表示
   - 列: Instance Type / Platform / Region / Cnt / NUs / Upfront ($) / Savings/mo / Savings% / Breakeven
-  - グループ末尾に合計節約額サマリを表示
+  - グループ末尾に合計節約額サマリを表示（フィルタ適用後の値）
 
 ---
 

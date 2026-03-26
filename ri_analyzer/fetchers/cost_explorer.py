@@ -431,7 +431,7 @@ def fetch_ri_recommendations(
                     upfront_cost              = float(d.get("UpfrontCost", 0)),
                     estimated_monthly_savings = float(d.get("EstimatedMonthlySavingsAmount", 0)),
                     estimated_savings_pct     = float(d.get("EstimatedMonthlySavingsPercentage", 0)),
-                    breakeven_months          = float(d.get("EstimatedBreakevenInMonths", 0)),
+                    breakeven_months          = float(d.get("EstimatedBreakEvenInMonths", 0)),
                     avg_utilization           = float(d.get("AverageUtilization", 0)),
                 ))
             groups.append(RiRecommendationGroup(

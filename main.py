@@ -254,7 +254,7 @@ def main() -> None:
 
         if "utilization" in sections:
             summaries = util_analyzer.summarize(util_records)
-            reporter.print_utilization(summaries, max_util=args.max_util, show_sub_id=args.show_sub_id)
+            reporter.print_utilization(summaries, max_util=args.max_util, engines=args.engine, families=args.family, show_sub_id=args.show_sub_id)
 
         if "recommendations" in sections:
             rec_cfg = cfg.recommendation
@@ -286,6 +286,8 @@ def main() -> None:
                 service=svc,
                 term=rec_cfg.term,
                 payment_option=rec_cfg.payment_option,
+                engines=args.engine,
+                families=args.family,
             )
 
     print()

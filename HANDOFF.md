@@ -3,17 +3,18 @@
 ## 現在の状態
 
 RDS + ElastiCache の RI 分析が動作確認済み。
-ElastiCache の Redis/Valkey 互換 NU 計算と Recommendations セクションを追加。
+`--engine` / `--family` フィルタを Utilization・Recommendations セクションにも適用。
+Recommendations の Breakeven 表示バグ（API フィールド名 typo）を修正。
 
 ### 直近のコミット
 
 ```
-（今回のコミット） Add ElastiCache Redis/Valkey NU compatibility and Recommendations section
+（今回のコミット） Fix engine/family filter for Utilization and Recommendations; fix Breakeven field name
+8f2da56 Add ElastiCache Redis/Valkey NU compatibility and Recommendations section
 33b2ed6 Update HANDOFF.md for session handoff
 b164500 Add ElastiCache support
 cffbbbf Add cache, coverage engine/region/filter improvements
 749451a Add coverage family summary, SSO error handling, non-SSO profile support
-5d06524 Enhance utilization display with count, NUs, family summary
 ```
 
 ---
@@ -27,8 +28,8 @@ cffbbbf Add cache, coverage engine/region/filter improvements
 --section expiration coverage utilization recommendations
 --max-util 80                  # 利用率 <= PCT% のみ表示
 --max-coverage 90              # カバレッジ <= PCT% のみ表示
---engine aurora                # カバレッジをエンジンで絞り込み（部分一致・大文字小文字無視）
---family r6g t4g               # カバレッジをインスタンスファミリーで絞り込み
+--engine aurora                # Coverage / Utilization / Recommendations をエンジンで絞り込み（部分一致・大文字小文字無視）
+--family r6g t4g               # Coverage / Utilization / Recommendations をインスタンスファミリーで絞り込み
 --show-sub-id                  # Utilization に Subscription ID 列を追加
 --no-color                     # カラー出力を無効化
 --no-cache                     # キャッシュをバイパスして AWS から再取得
@@ -77,6 +78,24 @@ recommendation:
 - エンジン次元の CE GroupBy キー: RDS=`DATABASE_ENGINE`, ElastiCache=`CACHE_ENGINE`
 - レスポンス属性キー: RDS=`databaseEngine`, ElastiCache=`cacheEngine`
 - マッピングは `cost_explorer.py` の `_CE_ENGINE_DIMENSION` / `_CE_ENGINE_ATTR`
+
+### --engine フィルタの platform 名正規化
+
+`GetReservationUtilization` の `platform` 属性は短縮形（例: `"Aurora"`）で返る。
+一方 `GetReservationCoverage` は `"Aurora MySQL"` という完全形で返る。
+`reporter.py` の `_UTIL_PLATFORM_NORMALIZE` でフィルタ前に正規化することで、
+両セクションで `--engine "aurora mysql"` が一貫して動作する。
+
+| Utilization platform | 正規化後 |
+|---|---|
+| `"Aurora"` | `"Aurora MySQL"` |
+
+Recommendations の platform は `"Aurora MySQL Single-AZ"` 形式なので正規化不要（通常の部分一致で動作）。
+
+### Breakeven フィールド名
+
+CE API の正しいフィールド名は `EstimatedBreakEvenInMonths`（"Even" の E が大文字）。
+旧来 `EstimatedBreakevenInMonths` と記述していたため Breakeven が常に 0.0 になっていた。修正済み。
 
 ---
 
