@@ -13,9 +13,10 @@ __pycache__/
 dist/
 build/
 
-# Logs
+# Logs / data dumps
 *.log
 log
+log_*
 
 # OS
 .DS_Store
