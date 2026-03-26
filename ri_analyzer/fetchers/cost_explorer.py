@@ -42,6 +42,18 @@ _CE_SERVICE_NAMES: dict[str, str] = {
     "ec2":         "Amazon Elastic Compute Cloud - Compute",
 }
 
+# GetReservationCoverage の GroupBy に渡すエンジン次元（サービスごとに異なる）
+_CE_ENGINE_DIMENSION: dict[str, str] = {
+    "rds":         "DATABASE_ENGINE",
+    "elasticache": "CACHE_ENGINE",
+}
+
+# レスポンスの Attributes からエンジン名を取り出すキー
+_CE_ENGINE_ATTR: dict[str, str] = {
+    "rds":         "databaseEngine",
+    "elasticache": "cacheEngine",
+}
+
 
 # ──────────────────────────────────────────────
 # データ型
@@ -247,7 +259,7 @@ def fetch_ri_coverage(
                 {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"},
                 {"Type": "DIMENSION", "Key": "REGION"},
                 {"Type": "DIMENSION", "Key": "INSTANCE_TYPE"},
-                {"Type": "DIMENSION", "Key": "DATABASE_ENGINE"},
+                {"Type": "DIMENSION", "Key": _CE_ENGINE_DIMENSION.get(service, "DATABASE_ENGINE")},
             ],
         )
     except ClientError as e:
@@ -267,7 +279,7 @@ def fetch_ri_coverage(
             account_id    = attrs.get("linkedAccount", "")
             region        = attrs.get("region", "")
             instance_type = attrs.get("instanceType", "")
-            platform      = attrs.get("databaseEngine", "")
+            platform      = attrs.get(_CE_ENGINE_ATTR.get(service, "databaseEngine"), "")
             covered   = float(coverage.get("ReservedHours", 0))
             on_demand = float(coverage.get("OnDemandHours", 0))
             total     = float(coverage.get("TotalRunningHours", 0))

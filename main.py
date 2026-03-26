@@ -180,12 +180,12 @@ def main() -> None:
     print(f"  Payer profile : {payer_profile}")
 
     for svc in services:
-        if svc != "rds":
+        if svc not in ("rds", "elasticache"):
             print(f"\n  [{svc.upper()}] not yet implemented (TODO), skipping.")
             continue
 
         start, end = _ce_time_period(cfg.analysis.lookback_days)
-        print(f"\n  -- RDS --")
+        print(f"\n  -- {svc.upper()} --")
         print(f"  CE period     : {start} to {end}  (end = UTC now - 48h)")
 
         # Fetch RI subscriptions + utilization from CE (payer account)

@@ -45,7 +45,7 @@ python main.py --no-color > output.log
 
 | オプション | 説明 |
 |---|---|
-| `--service SERVICE [...]` | 対象サービス（rds / elasticache / opensearch）複数指定可 |
+| `--service SERVICE [...]` | 対象サービス（**rds** / **elasticache** / opensearch）複数指定可 |
 | `--section SECTION [...]` | 表示セクション（expiration / coverage / utilization）複数指定可 |
 | `--max-util PCT` | 利用率が PCT% 以下のサブスクリプションのみ表示 |
 | `--max-coverage PCT` | カバレッジが PCT% 以下のグループのみ表示 |
