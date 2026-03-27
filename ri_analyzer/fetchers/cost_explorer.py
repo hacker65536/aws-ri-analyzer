@@ -271,15 +271,18 @@ def fetch_ri_coverage(
         raise
 
     records: list[RiCoverageRecord] = []
+    engine_attr = _CE_ENGINE_ATTR.get(service, "databaseEngine")
     for period in resp.get("CoveragesByTime", []):
         tp = period["TimePeriod"]
         for group in period.get("Groups", []):
             attrs    = group.get("Attributes", {})
+            keys     = group.get("Keys", [])
             coverage = group.get("Coverage", {}).get("CoverageHours", {})
             account_id    = attrs.get("linkedAccount", "")
             region        = attrs.get("region", "")
             instance_type = attrs.get("instanceType", "")
-            platform      = attrs.get(_CE_ENGINE_ATTR.get(service, "databaseEngine"), "")
+            # cacheEngine は Attributes に含まれないことがある。Keys[3] をフォールバックとして使用
+            platform      = attrs.get(engine_attr) or (keys[3] if len(keys) > 3 else "")
             covered   = float(coverage.get("ReservedHours", 0))
             on_demand = float(coverage.get("OnDemandHours", 0))
             total     = float(coverage.get("TotalRunningHours", 0))
@@ -348,20 +351,24 @@ def fetch_ri_coverage_range(
         raise
 
     records: list[RiCoverageRecord] = []
+    engine_attr = _CE_ENGINE_ATTR.get(service, "databaseEngine")
     for period in resp.get("CoveragesByTime", []):
         tp = period["TimePeriod"]
         for group in period.get("Groups", []):
             attrs    = group.get("Attributes", {})
+            keys     = group.get("Keys", [])
             coverage = group.get("Coverage", {}).get("CoverageHours", {})
             covered   = float(coverage.get("ReservedHours", 0))
             on_demand = float(coverage.get("OnDemandHours", 0))
             total     = float(coverage.get("TotalRunningHours", 0))
             pct       = float(coverage.get("CoverageHoursPercentage", 0))
+            # cacheEngine は Attributes に含まれないことがある。Keys[3] をフォールバックとして使用
+            platform = attrs.get(engine_attr) or (keys[3] if len(keys) > 3 else "")
             records.append(RiCoverageRecord(
                 account_id      = attrs.get("linkedAccount", ""),
                 region          = attrs.get("region", ""),
                 instance_type   = attrs.get("instanceType", ""),
-                platform        = attrs.get(_CE_ENGINE_ATTR.get(service, "databaseEngine"), ""),
+                platform        = platform,
                 period_start    = tp["Start"],
                 period_end      = tp["End"],
                 covered_hours   = covered,

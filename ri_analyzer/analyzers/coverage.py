@@ -22,9 +22,15 @@ _ELASTICACHE_UNIFIED_PLATFORM = "Redis/Valkey"
 
 
 def _normalize_platform(platform: str) -> str:
-    """Redis / Valkey を統一プラットフォーム名に正規化する"""
-    if platform.lower() in _ELASTICACHE_COMPATIBLE_ENGINES:
-        return _ELASTICACHE_UNIFIED_PLATFORM
+    """Redis / Valkey を統一プラットフォーム名に正規化する。
+
+    CE が "Redis 7.x" や "redis6.x" のようなバージョン付き文字列を返す場合も対応する。
+    """
+    lower = platform.lower()
+    for engine in _ELASTICACHE_COMPATIBLE_ENGINES:
+        # 完全一致 / "redis " で始まる / "redis." で始まる
+        if lower == engine or lower.startswith(engine + " ") or lower.startswith(engine + "."):
+            return _ELASTICACHE_UNIFIED_PLATFORM
     return platform
 
 
