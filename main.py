@@ -2,15 +2,15 @@
 """AWS RI Analyzer
 
 Usage:
-  python main.py
-  python main.py --config path/to/config.yaml
-  python main.py --service rds elasticache
-  python main.py --section expiration coverage
-  python main.py --max-util 80
-  python main.py --max-coverage 90
-  python main.py --no-color
-  python main.py --athena                              # CUR セクションを追加
-  python main.py --athena --cur-year 2026 --cur-month 2
+  uv run ri-analyzer
+  uv run ri-analyzer --config path/to/config.yaml
+  uv run ri-analyzer --service rds elasticache
+  uv run ri-analyzer --section expiration coverage
+  uv run ri-analyzer --max-util 80
+  uv run ri-analyzer --max-coverage 90
+  uv run ri-analyzer --no-color
+  uv run ri-analyzer --athena                              # CUR セクションを追加
+  uv run ri-analyzer --athena --cur-year 2026 --cur-month 2
 """
 
 from __future__ import annotations
