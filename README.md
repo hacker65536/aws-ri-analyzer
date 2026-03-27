@@ -19,6 +19,22 @@ cp config.yaml.example config.yaml
 > `uv sync` が `.venv` の作成と依存パッケージのインストールを一括で行います。
 > `uv pip install -e .` で `ri-analyzer` コマンドが使えるようになります。
 
+### どこからでも実行できるようにする（PATH 設定）
+
+`~/.zshrc`（bash の場合は `~/.bashrc`）に以下を追加することで、ターミナルのカレントディレクトリに関わらず `ri-analyzer` を直接実行できます。
+
+```bash
+export PATH="/path/to/aws-ri-analyzer/.venv/bin:$PATH"
+```
+
+追加後に反映：
+
+```bash
+source ~/.zshrc
+```
+
+> `/path/to/aws-ri-analyzer` はこのリポジトリをクローンした実際のパスに置き換えてください。
+
 ### シェル補完（zsh / bash）
 
 `~/.zshrc`（bash の場合は `~/.bashrc`）に以下を追加することで、オプションの Tab 補完が有効になります。
