@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 """AWS RI Analyzer
 
 Usage:
@@ -16,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import argcomplete
 import logging
 import sys
 from datetime import datetime, timezone
@@ -148,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="M",
         help="CUR query month 1-12 (default: last month)",
     )
+    argcomplete.autocomplete(p)
     return p
 
 

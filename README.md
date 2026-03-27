@@ -19,6 +19,16 @@ cp config.yaml.example config.yaml
 > `uv sync` が `.venv` の作成と依存パッケージのインストールを一括で行います。
 > `uv pip install -e .` で `ri-analyzer` コマンドが使えるようになります。
 
+### シェル補完（zsh / bash）
+
+`~/.zshrc`（bash の場合は `~/.bashrc`）に以下を追加することで、オプションの Tab 補完が有効になります。
+
+```bash
+eval "$(/path/to/aws-ri-analyzer/.venv/bin/register-python-argcomplete ri-analyzer)"
+```
+
+補完対象：`--service`、`--section`、`--output` などの `choices` を持つオプション。
+
 <details>
 <summary>pip を使う場合</summary>
 
