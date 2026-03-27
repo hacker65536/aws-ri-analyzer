@@ -68,10 +68,14 @@ class CoverageSummary:
         return "low"
 
 
-def analyze(records: list[RiCoverageRecord]) -> list[CoverageSummary]:
+def analyze(records: list[RiCoverageRecord], split_engine: bool = False) -> list[CoverageSummary]:
     """
     期間をまたぐレコードを集計し、CoverageSummary のリストを返す。
     on_demand_hours > 0 のものが「RI 未カバーあり」を意味する。
+
+    Parameters
+    ----------
+    split_engine : True の場合、Redis/Valkey を別グループとして表示する（デフォルト: 統合）
     """
     # (account_id, region, instance_type, normalized_platform) → 集計値
     agg: defaultdict[tuple, dict] = defaultdict(
@@ -80,7 +84,8 @@ def analyze(records: list[RiCoverageRecord]) -> list[CoverageSummary]:
     )
 
     for rec in records:
-        key = (rec.account_id, rec.region, rec.instance_type, _normalize_platform(rec.platform))
+        platform = rec.platform if split_engine else _normalize_platform(rec.platform)
+        key = (rec.account_id, rec.region, rec.instance_type, platform)
         # エンジン別係数で NUs を算出（Redis と Valkey は係数が異なる）
         factor = _norm_factor_for_engine(rec.instance_type, rec.platform)
         agg[key]["covered"]       += rec.covered_hours

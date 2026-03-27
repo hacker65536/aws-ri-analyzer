@@ -18,11 +18,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from ri_analyzer.config import Config
 from ri_analyzer.fetchers.athena import AthenaClient, PartitionMissingError
@@ -179,7 +182,14 @@ def _clip(val: str, maxlen: int) -> str:
 
 
 def info(msg: str) -> None:
-    print(msg, file=sys.stderr)
+    """診断メッセージを stderr に出力する。ログレベルに応じてフィルタされる。"""
+    # [ERROR] / [WARN] プレフィックスに基づいてログレベルを振り分ける
+    if msg.startswith("[ERROR]"):
+        logger.error("%s", msg[len("[ERROR]"):].strip())
+    elif msg.startswith("[WARN]"):
+        logger.warning("%s", msg[len("[WARN]"):].strip())
+    else:
+        logger.info("%s", msg.lstrip("[INFO]").strip())
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +267,18 @@ def main() -> None:
         metavar="PATH",
         help="config.yaml のパス",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="デバッグログを stderr に表示する",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
 
     # --list
     if args.list:

@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from datetime import datetime, timezone
 
@@ -64,9 +65,10 @@ def _prompt_multiselect(label: str, choices: list[str]) -> list[str]:
 
 
 def _sso_expired_error(profile: str) -> None:
-    print("\n[ERROR] AWS SSO session has expired.", file=sys.stderr)
-    print(f"  Run the following command to log in again:\n", file=sys.stderr)
-    print(f"    aws sso login --profile \"{profile}\"", file=sys.stderr)
+    logger.error(
+        "AWS SSO session has expired.\n  Run the following command to log in again:\n\n"
+        "    aws sso login --profile \"%s\"", profile
+    )
     sys.exit(1)
 
 
@@ -120,6 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-color", action="store_true", help="Disable colored output")
     p.add_argument("--show-sub-id", action="store_true", help="Show subscription ID column in utilization table")
     p.add_argument("--no-cache", action="store_true", help="Bypass cache and fetch fresh data from AWS")
+    p.add_argument("--split-engine", action="store_true", help="Show Redis and Valkey as separate groups in coverage")
+    p.add_argument("--output", choices=["console", "json"], default="console",
+                   help="Output format: console (default) or json")
+    p.add_argument("--verbose", action="store_true", help="Enable debug logging to stderr")
 
     # Athena / CUR オプション
     athena_grp = p.add_argument_group("Athena / CUR options")
@@ -145,8 +151,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+logger = logging.getLogger(__name__)
+
+
 def main() -> None:
     args = build_parser().parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
 
     if args.no_color:
         reporter.set_color(False)
@@ -154,7 +169,7 @@ def main() -> None:
     try:
         cfg = Config.load(args.config)
     except (FileNotFoundError, ValueError) as e:
-        print(f"[ERROR] Failed to load config: {e}", file=sys.stderr)
+        logger.error("Failed to load config: %s", e)
         sys.exit(1)
 
     # ── Resolve services ──────────────────────────────────────────
@@ -204,7 +219,7 @@ def main() -> None:
     needs_athena = args.athena or any(s in sections for s in _ATHENA_SECTIONS)
     if needs_athena:
         if cfg.athena is None:
-            print("[ERROR] config.yaml に athena セクションがありません。--athena を使う場合は設定してください。", file=sys.stderr)
+            logger.error("config.yaml に athena セクションがありません。--athena を使う場合は設定してください。")
             sys.exit(1)
         from ri_analyzer.fetchers.athena import AthenaClient
         from ri_analyzer.fetchers.cur_queries import (
@@ -214,23 +229,26 @@ def main() -> None:
         athena_client = AthenaClient(cfg.athena, payer_profile=cfg.payer.profile if cfg.payer.profile else None)
 
     cache = CacheStore(ttl_hours=cfg.analysis.cache_ttl_hours)
+    use_json = args.output == "json"
+    json_results: dict = {}  # --output json 時に収集する
 
-    print(f"\nAWS RI Analyzer  [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
-    print(f"  Config        : {cfg._path}")
-    print(f"  Payer account : {cfg.payer.account_id}")
-    print(f"  Services      : {', '.join(services)}")
-    print(f"  Sections      : {', '.join(sections)}")
-    print(f"  Regions       : {', '.join(cfg.analysis.regions)}")
-    if args.max_util is not None:
-        print(f"  Filter        : utilization <= {args.max_util}%")
-    if args.max_coverage is not None:
-        print(f"  Filter        : coverage <= {args.max_coverage}%")
-    if args.engine:
-        print(f"  Filter        : engine = {', '.join(args.engine)}")
-    if args.family:
-        print(f"  Filter        : family = {', '.join(args.family)}")
-    if needs_athena:
-        print(f"  CUR period    : {cur_year}-{cur_month:02d}")
+    if not use_json:
+        print(f"\nAWS RI Analyzer  [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
+        print(f"  Config        : {cfg._path}")
+        print(f"  Payer account : {cfg.payer.account_id}")
+        print(f"  Services      : {', '.join(services)}")
+        print(f"  Sections      : {', '.join(sections)}")
+        print(f"  Regions       : {', '.join(cfg.analysis.regions)}")
+        if args.max_util is not None:
+            print(f"  Filter        : utilization <= {args.max_util}%")
+        if args.max_coverage is not None:
+            print(f"  Filter        : coverage <= {args.max_coverage}%")
+        if args.engine:
+            print(f"  Filter        : engine = {', '.join(args.engine)}")
+        if args.family:
+            print(f"  Filter        : family = {', '.join(args.family)}")
+        if needs_athena:
+            print(f"  CUR period    : {cur_year}-{cur_month:02d}")
 
     if cfg.payer.profile:
         payer_profile = cfg.payer.profile
@@ -238,7 +256,7 @@ def main() -> None:
         try:
             payer_profile = resolve_profile(account_id=cfg.payer.account_id)
         except ValueError as e:
-            print(f"[ERROR] Failed to resolve payer profile:\n  {e}", file=sys.stderr)
+            logger.error("Failed to resolve payer profile:\n  %s", e)
             sys.exit(1)
 
     print(f"  Payer profile : {payer_profile}")
@@ -249,13 +267,15 @@ def main() -> None:
             continue
 
         start, end = _ce_time_period(cfg.analysis.lookback_days)
-        print(f"\n  -- {svc.upper()} --")
-        print(f"  CE period     : {start} to {end}  (end = UTC now - 48h)")
+        if not use_json:
+            print(f"\n  -- {svc.upper()} --")
+            print(f"  CE period     : {start} to {end}  (end = UTC now - 48h)")
+        json_results[svc] = {"ce_period": {"start": start, "end": end}}
 
         rec_groups: list = []  # recommendations セクションで設定される（factcheck で参照）
 
         # Fetch RI subscriptions + utilization from CE (payer account)
-        sub_key = f"subscriptions:{payer_profile}:{svc}:{cfg.analysis.lookback_days}"
+        sub_key = f"subscriptions:{payer_profile}:{svc}:{cfg.analysis.lookback_days}:{end}"
         cached_sub = None if args.no_cache else cache.get(sub_key)
         if cached_sub is not None:
             subscriptions, util_records = cached_sub
@@ -271,7 +291,7 @@ def main() -> None:
             except (TokenRetrievalError, SSOTokenLoadError):
                 _sso_expired_error(payer_profile)
             except PermissionError as e:
-                print(f"\n[ERROR] {e}", file=sys.stderr)
+                logger.error("%s", e)
                 sys.exit(1)
             cache.set(sub_key, (subscriptions, util_records))
             print(f" {len(subscriptions)} subscription(s)")
@@ -280,7 +300,7 @@ def main() -> None:
         # TODO: For per-instance detail, query CUR via Athena (plan B)
         coverage_records = []
         if "coverage" in sections:
-            cov_key = f"coverage:{payer_profile}:{svc}:{cfg.analysis.lookback_days}"
+            cov_key = f"coverage:{payer_profile}:{svc}:{cfg.analysis.lookback_days}:{end}"
             cached_cov = None if args.no_cache else cache.get(cov_key)
             if cached_cov is not None:
                 coverage_records = cached_cov
@@ -296,7 +316,7 @@ def main() -> None:
                 except (TokenRetrievalError, SSOTokenLoadError):
                     _sso_expired_error(payer_profile)
                 except PermissionError as e:
-                    print(f"\n  [WARN] Skipped coverage: {e}")
+                    logger.warning("Skipped coverage: %s", e)
                 else:
                     cache.set(cov_key, coverage_records)
                 print(f" {len(coverage_records)} record(s)")
@@ -305,26 +325,39 @@ def main() -> None:
             expired, warning, ok = exp_analyzer.analyze(
                 subscriptions, warn_days=cfg.analysis.expiration_warn_days
             )
-            reporter.print_expiration(
-                expired, warning, ok, warn_days=cfg.analysis.expiration_warn_days
-            )
+            if use_json:
+                json_results[svc]["expiration"] = {
+                    "expired": expired,
+                    "warning": warning,
+                    "ok":      ok,
+                }
+            else:
+                reporter.print_expiration(
+                    expired, warning, ok, warn_days=cfg.analysis.expiration_warn_days
+                )
 
         if "coverage" in sections:
-            coverage_summaries = cov_analyzer.analyze(coverage_records)
-            reporter.print_coverage(
-                coverage_summaries,
-                max_coverage=args.max_coverage,
-                engines=args.engine,
-                families=args.family,
-            )
+            coverage_summaries = cov_analyzer.analyze(coverage_records, split_engine=args.split_engine)
+            if use_json:
+                json_results[svc]["coverage"] = coverage_summaries
+            else:
+                reporter.print_coverage(
+                    coverage_summaries,
+                    max_coverage=args.max_coverage,
+                    engines=args.engine,
+                    families=args.family,
+                )
 
         if "utilization" in sections:
             summaries = util_analyzer.summarize(util_records)
-            reporter.print_utilization(summaries, max_util=args.max_util, engines=args.engine, families=args.family, show_sub_id=args.show_sub_id)
+            if use_json:
+                json_results[svc]["utilization"] = summaries
+            else:
+                reporter.print_utilization(summaries, max_util=args.max_util, engines=args.engine, families=args.family, show_sub_id=args.show_sub_id)
 
         if "recommendations" in sections:
             rec_cfg = cfg.recommendation
-            rec_key = f"recommendations:{payer_profile}:{svc}:{rec_cfg.term}:{rec_cfg.payment_option}:{rec_cfg.lookback_days}"
+            rec_key = f"recommendations:{payer_profile}:{svc}:{rec_cfg.term}:{rec_cfg.payment_option}:{rec_cfg.lookback_days}:{end}"
             cached_rec = None if args.no_cache else cache.get(rec_key)
             if cached_rec is not None:
                 rec_groups = cached_rec
@@ -342,19 +375,22 @@ def main() -> None:
                 except (TokenRetrievalError, SSOTokenLoadError):
                     _sso_expired_error(payer_profile)
                 except PermissionError as e:
-                    print(f"\n  [WARN] Skipped recommendations: {e}")
+                    logger.warning("Skipped recommendations: %s", e)
                     rec_groups = []
                 else:
                     cache.set(rec_key, rec_groups)
                 print(f" {sum(len(g.details) for g in rec_groups)} item(s)")
-            reporter.print_recommendations(
-                rec_groups,
-                service=svc,
-                term=rec_cfg.term,
-                payment_option=rec_cfg.payment_option,
-                engines=args.engine,
-                families=args.family,
-            )
+            if use_json:
+                json_results[svc]["recommendations"] = rec_groups
+            else:
+                reporter.print_recommendations(
+                    rec_groups,
+                    service=svc,
+                    term=rec_cfg.term,
+                    payment_option=rec_cfg.payment_option,
+                    engines=args.engine,
+                    families=args.family,
+                )
 
         # ── Athena / CUR セクション ───────────────────────────────
         if athena_client is None:
@@ -381,11 +417,14 @@ def main() -> None:
                     cache.set(cur_inst_key, cur_inst_rows)
                     print(f" {len(cur_inst_rows)} row(s)")
                 except Exception as e:
-                    print(f"\n  [WARN] Skipped CUR instances: {e}")
+                    logger.warning("Skipped CUR instances: %s", e)
                     cur_inst_rows = []
 
             if "cur_instances" in sections and cur_inst_rows:
-                reporter.print_cur_instances(cur_inst_rows, svc, cur_year, cur_month)
+                if use_json:
+                    json_results[svc]["cur_instances"] = cur_inst_rows
+                else:
+                    reporter.print_cur_instances(cur_inst_rows, svc, cur_year, cur_month)
 
             # CE Recommendation ファクトチェック（recommendations も実行済みの場合）
             if args.athena and "recommendations" in sections and rec_groups and cur_inst_rows:
@@ -394,7 +433,10 @@ def main() -> None:
                     engines_lower = [e.lower() for e in args.engine]
                     all_details = [d for d in all_details if any(e in d.platform.lower() for e in engines_lower)]
                 checks = factcheck_recommendations(all_details, cur_inst_rows)
-                reporter.print_ce_factcheck(checks, svc, cur_year, cur_month)
+                if use_json:
+                    json_results[svc]["ce_factcheck"] = checks
+                else:
+                    reporter.print_ce_factcheck(checks, svc, cur_year, cur_month)
 
         if "cur_coverage" in sections:
             cur_cov_key = f"athena:coverage:{svc}:{cur_year}:{cur_month}"
@@ -410,10 +452,13 @@ def main() -> None:
                     cache.set(cur_cov_key, cur_cov_rows)
                     print(f" {len(cur_cov_rows)} row(s)")
                 except Exception as e:
-                    print(f"\n  [WARN] Skipped CUR coverage: {e}")
+                    logger.warning("Skipped CUR coverage: %s", e)
                     cur_cov_rows = []
             if cur_cov_rows:
-                reporter.print_cur_coverage(cur_cov_rows, svc, cur_year, cur_month)
+                if use_json:
+                    json_results[svc]["cur_coverage"] = cur_cov_rows
+                else:
+                    reporter.print_cur_coverage(cur_cov_rows, svc, cur_year, cur_month)
 
         if "unused_ri" in sections:
             unused_key = f"athena:unused_ri:{svc}:{cur_year}:{cur_month}"
@@ -429,11 +474,18 @@ def main() -> None:
                     cache.set(unused_key, unused_rows)
                     print(f" {len(unused_rows)} row(s)")
                 except Exception as e:
-                    print(f"\n  [WARN] Skipped CUR unused RI: {e}")
+                    logger.warning("Skipped CUR unused RI: %s", e)
                     unused_rows = []
-            reporter.print_unused_ri(unused_rows, svc, cur_year, cur_month)
+            if use_json:
+                json_results[svc]["unused_ri"] = unused_rows
+            else:
+                reporter.print_unused_ri(unused_rows, svc, cur_year, cur_month)
 
-    print()
+    if use_json:
+        from ri_analyzer.reporter.json_output import dump
+        dump(json_results)
+    else:
+        print()
 
 
 if __name__ == "__main__":

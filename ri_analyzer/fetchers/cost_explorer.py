@@ -11,9 +11,20 @@ CE は us-east-1 エンドポイントのみ。
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+import boto3
+from botocore.exceptions import ClientError
+
+from ri_analyzer.fetchers.ce_models import (  # noqa: F401  (re-export for backward compat)
+    RiSubscription,
+    RiUtilizationRecord,
+    RiCoverageRecord,
+    RiRecommendationDetail,
+    RiRecommendationGroup,
+)
+from ri_analyzer.service_registry import get_service
 
 
 def _ce_time_period(lookback_days: int) -> tuple[str, str]:
@@ -29,86 +40,6 @@ def _ce_time_period(lookback_days: int) -> tuple[str, str]:
     end_date = end_dt.date()
     start_date = end_date - timedelta(days=lookback_days)
     return str(start_date), str(end_date)
-
-import boto3
-from botocore.exceptions import ClientError
-
-# CE に渡す Service 名
-_CE_SERVICE_NAMES: dict[str, str] = {
-    "rds":         "Amazon Relational Database Service",
-    "elasticache": "Amazon ElastiCache",
-    "opensearch":  "Amazon OpenSearch Service",
-    "redshift":    "Amazon Redshift",
-    "ec2":         "Amazon Elastic Compute Cloud - Compute",
-}
-
-# GetReservationCoverage の GroupBy に渡すエンジン次元（サービスごとに異なる）
-_CE_ENGINE_DIMENSION: dict[str, str] = {
-    "rds":         "DATABASE_ENGINE",
-    "elasticache": "CACHE_ENGINE",
-}
-
-# レスポンスの Attributes からエンジン名を取り出すキー
-_CE_ENGINE_ATTR: dict[str, str] = {
-    "rds":         "databaseEngine",
-    "elasticache": "cacheEngine",
-}
-
-
-# ──────────────────────────────────────────────
-# データ型
-# ──────────────────────────────────────────────
-
-@dataclass
-class RiSubscription:
-    """
-    RI サブスクリプション 1 件。
-    CE の Attributes から組み立てる。
-    """
-    subscription_id: str
-    account_id: str
-    account_name: str
-    region: str
-    instance_type: str      # db.t4g.large
-    platform: str           # Aurora / MySQL / PostgreSQL ...
-    count: int              # numberOfInstances
-    start_time: datetime
-    end_time: datetime      # endDateTime → 有効期限
-    status: str             # Active / Expired
-    size_flexibility: str   # FlexRI / "" など
-    offering_type: str      # All Upfront / Partial Upfront / No Upfront
-
-    @property
-    def days_remaining(self) -> int:
-        return (self.end_time - datetime.now(timezone.utc)).days
-
-    @property
-    def engine(self) -> str:
-        """platform → 小文字エンジン名（coverage 分析用）"""
-        return self.platform.lower()
-
-    @property
-    def instance_class(self) -> str:
-        return self.instance_type
-
-
-@dataclass
-class RiUtilizationRecord:
-    """1 サブスクリプション × 1 期間 の利用率レコード"""
-    subscription_id: str
-    period_start: str
-    period_end: str
-    instance_type: str
-    region: str
-    platform: str               # Aurora / MySQL / PostgreSQL ...
-    count: int                  # numberOfInstances
-    utilization_pct: float
-    purchased_hours: float
-    used_hours: float
-    unused_hours: float
-    net_savings: float              # = on_demand_cost_if_used - amortized_fee
-    on_demand_cost_if_used: float   # 使用時間分をオンデマンドで払った場合のコスト
-    amortized_fee: float            # RI の償却コスト（按分）
 
 
 # ──────────────────────────────────────────────
@@ -134,10 +65,7 @@ def fetch_ri_subscriptions(
     -------
     (subscriptions, utilization_records) のタプル
     """
-    ce_service = _CE_SERVICE_NAMES.get(service)
-    if not ce_service:
-        raise ValueError(f"未対応のサービスです: {service}。対応: {list(_CE_SERVICE_NAMES)}")
-
+    svc_cfg = get_service(service)
     start_date, end_date = _ce_time_period(lookback_days)
 
     session = boto3.Session(profile_name=payer_profile, region_name="us-east-1")
@@ -152,7 +80,7 @@ def fetch_ri_subscriptions(
             Filter={
                 "Dimensions": {
                     "Key":    "SERVICE",
-                    "Values": [ce_service],
+                    "Values": [svc_cfg.ce_service_name],
                 }
             },
             GroupBy=[
@@ -204,21 +132,6 @@ def fetch_ri_subscriptions(
     return list(seen_subs.values()), util_records
 
 
-@dataclass
-class RiCoverageRecord:
-    """アカウント × リージョン × インスタンスタイプ × プラットフォーム単位のカバレッジレコード"""
-    account_id: str
-    region: str
-    instance_type: str
-    platform: str
-    period_start: str
-    period_end: str
-    covered_hours: float       # RI 適用済み時間
-    on_demand_hours: float     # RI 未適用（オンデマンド）時間
-    total_hours: float
-    coverage_pct: float        # = covered / total * 100
-
-
 def fetch_ri_coverage(
     payer_profile: str,
     service: str,
@@ -234,10 +147,7 @@ def fetch_ri_coverage(
     TODO: さらに詳細な実行中インスタンス一覧が必要な場合は
           Athena 経由で CUR にクエリする（案B）で実装予定。
     """
-    ce_service = _CE_SERVICE_NAMES.get(service)
-    if not ce_service:
-        raise ValueError(f"未対応のサービスです: {service}。対応: {list(_CE_SERVICE_NAMES)}")
-
+    svc_cfg = get_service(service)
     start_date, end_date = _ce_time_period(lookback_days)
 
     session = boto3.Session(profile_name=payer_profile, region_name="us-east-1")
@@ -252,14 +162,14 @@ def fetch_ri_coverage(
             Filter={
                 "Dimensions": {
                     "Key":    "SERVICE",
-                    "Values": [ce_service],
+                    "Values": [svc_cfg.ce_service_name],
                 }
             },
             GroupBy=[
                 {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"},
                 {"Type": "DIMENSION", "Key": "REGION"},
                 {"Type": "DIMENSION", "Key": "INSTANCE_TYPE"},
-                {"Type": "DIMENSION", "Key": _CE_ENGINE_DIMENSION.get(service, "DATABASE_ENGINE")},
+                {"Type": "DIMENSION", "Key": svc_cfg.engine_dimension},
             ],
         )
     except ClientError as e:
@@ -271,7 +181,7 @@ def fetch_ri_coverage(
         raise
 
     records: list[RiCoverageRecord] = []
-    engine_attr = _CE_ENGINE_ATTR.get(service, "databaseEngine")
+    engine_attr = svc_cfg.engine_attr
     for period in resp.get("CoveragesByTime", []):
         tp = period["TimePeriod"]
         for group in period.get("Groups", []):
@@ -319,9 +229,7 @@ def fetch_ri_coverage_range(
     CUR の line_item_usage_start_date と同じ期間を渡すことで突き合わせが可能。
     """
 
-    ce_service = _CE_SERVICE_NAMES.get(service)
-    if not ce_service:
-        raise ValueError(f"未対応のサービスです: {service}。対応: {list(_CE_SERVICE_NAMES)}")
+    svc_cfg = get_service(service)
 
     session = boto3.Session(profile_name=payer_profile, region_name="us-east-1")
     ce = session.client("ce")
@@ -332,14 +240,14 @@ def fetch_ri_coverage_range(
             Filter={
                 "Dimensions": {
                     "Key":    "SERVICE",
-                    "Values": [ce_service],
+                    "Values": [svc_cfg.ce_service_name],
                 }
             },
             GroupBy=[
                 {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"},
                 {"Type": "DIMENSION", "Key": "REGION"},
                 {"Type": "DIMENSION", "Key": "INSTANCE_TYPE"},
-                {"Type": "DIMENSION", "Key": _CE_ENGINE_DIMENSION.get(service, "DATABASE_ENGINE")},
+                {"Type": "DIMENSION", "Key": svc_cfg.engine_dimension},
             ],
         )
     except ClientError as e:
@@ -351,7 +259,7 @@ def fetch_ri_coverage_range(
         raise
 
     records: list[RiCoverageRecord] = []
-    engine_attr = _CE_ENGINE_ATTR.get(service, "databaseEngine")
+    engine_attr = svc_cfg.engine_attr
     for period in resp.get("CoveragesByTime", []):
         tp = period["TimePeriod"]
         for group in period.get("Groups", []):
@@ -384,46 +292,12 @@ def fetch_ri_coverage_range(
 # Recommendations
 # ──────────────────────────────────────────────
 
-@dataclass
-class RiRecommendationDetail:
-    """1インスタンスタイプあたりの購入推奨レコード"""
-    instance_type: str
-    region: str
-    platform: str           # Redis / Valkey / Aurora MySQL / etc.
-    count: int              # 推奨購入数
-    normalized_units: float
-    upfront_cost: float
-    estimated_monthly_savings: float
-    estimated_savings_pct: float
-    breakeven_months: float
-    avg_utilization: float  # 直近の平均使用率（推奨根拠）
-
-
-@dataclass
-class RiRecommendationGroup:
-    """サービス × 期間 × 支払いタイプ単位の推奨グループ"""
-    service: str
-    term: str           # "ONE_YEAR" / "THREE_YEARS"
-    payment_option: str # "ALL_UPFRONT" / "PARTIAL_UPFRONT" / "NO_UPFRONT"
-    details: list[RiRecommendationDetail]
-    total_monthly_savings: float
-    total_savings_pct: float
-    currency: str
-
-
 _CE_LOOKBACK_MAP: dict[int, str] = {7: "SEVEN_DAYS", 30: "THIRTY_DAYS", 60: "SIXTY_DAYS"}
-
-# サービスキー → InstanceDetails 内のキー名
-_CE_INSTANCE_DETAIL_KEY: dict[str, str] = {
-    "rds":         "RDSInstanceDetails",
-    "elasticache": "ElastiCacheInstanceDetails",
-    "opensearch":  "ESInstanceDetails",
-}
-
 
 def _parse_instance_detail(service: str, instance_details: dict[str, Any]) -> tuple[str, str, str]:
     """InstanceDetails から (instance_type, region, platform) を返す"""
-    key = _CE_INSTANCE_DETAIL_KEY.get(service, "")
+    from ri_analyzer.service_registry import SERVICES
+    key = SERVICES[service].instance_detail_key if service in SERVICES else ""
     d = instance_details.get(key, {})
     if service == "rds":
         instance_type = d.get("InstanceType", "")
@@ -461,10 +335,7 @@ def fetch_ri_recommendations(
     payment_option : "ALL_UPFRONT" / "PARTIAL_UPFRONT" / "NO_UPFRONT"
     lookback_days  : 7 / 30 / 60（CE が受け付ける値のみ）
     """
-    ce_service = _CE_SERVICE_NAMES.get(service)
-    if not ce_service:
-        raise ValueError(f"未対応のサービスです: {service}。対応: {list(_CE_SERVICE_NAMES)}")
-
+    svc_cfg = get_service(service)
     lookback = _CE_LOOKBACK_MAP.get(lookback_days, "THIRTY_DAYS")
 
     session = boto3.Session(profile_name=payer_profile, region_name="us-east-1")
@@ -475,7 +346,7 @@ def fetch_ri_recommendations(
 
     while True:
         kwargs: dict[str, Any] = dict(
-            Service=ce_service,
+            Service=svc_cfg.ce_service_name,
             TermInYears=term,
             PaymentOption=payment_option,
             LookbackPeriodInDays=lookback,

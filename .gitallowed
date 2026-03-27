@@ -1,0 +1,5 @@
+# False positives: placeholder account IDs used in unit tests
+account_id="111111111111"
+account_id="222222222222"
+account_id="123456789012"
+account_id: str = "123456789012"
