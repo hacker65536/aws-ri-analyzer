@@ -162,6 +162,8 @@ def main() -> None:
         format="%(levelname)s: %(message)s",
         stream=sys.stderr,
     )
+    if not args.verbose:
+        logging.getLogger("botocore").setLevel(logging.ERROR)
 
     if args.no_color:
         reporter.set_color(False)

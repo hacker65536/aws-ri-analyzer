@@ -7,3 +7,14 @@ dependencies = [
     "botocore>=1.34.0",
     "pyyaml>=6.0",
 ]
+
+[project.scripts]
+ri-analyzer = "main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ri_analyzer"]
+artifacts = ["main.py"]
