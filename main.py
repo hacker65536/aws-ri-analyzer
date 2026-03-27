@@ -38,6 +38,7 @@ from ri_analyzer.analyzers.cur_detail import (
     factcheck_recommendations,
 )
 from ri_analyzer import reporter
+from ri_analyzer.service_registry import get_service
 
 
 _ALL_SERVICES = ["rds", "elasticache", "opensearch"]
@@ -352,6 +353,8 @@ def main() -> None:
                     expired, warning, ok, warn_days=cfg.analysis.expiration_warn_days
                 )
 
+        svc_cfg = get_service(svc)
+
         if "coverage" in sections:
             coverage_summaries = cov_analyzer.analyze(coverage_records, split_engine=args.split_engine)
             if use_json:
@@ -362,6 +365,7 @@ def main() -> None:
                     max_coverage=args.max_coverage,
                     engines=args.engine,
                     families=args.family,
+                    use_family_summary=svc_cfg.has_nu_flexibility,
                 )
 
         if "utilization" in sections:
@@ -369,7 +373,7 @@ def main() -> None:
             if use_json:
                 json_results[svc]["utilization"] = summaries
             else:
-                reporter.print_utilization(summaries, max_util=args.max_util, engines=args.engine, families=args.family, show_sub_id=args.show_sub_id)
+                reporter.print_utilization(summaries, max_util=args.max_util, engines=args.engine, families=args.family, show_sub_id=args.show_sub_id, use_family_summary=svc_cfg.has_nu_flexibility)
 
         if "recommendations" in sections:
             rec_cfg = cfg.recommendation

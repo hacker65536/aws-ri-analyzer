@@ -15,6 +15,7 @@ class ServiceConfig:
     engine_dimension: str     # GetReservationCoverage の GroupBy キー
     engine_attr: str          # CE レスポンスの Attributes キー
     instance_detail_key: str  # GetReservationPurchaseRecommendation の InstanceDetails キー
+    has_nu_flexibility: bool = True  # 正規化ユニットによるファミリー内サイズ柔軟性の有無
 
 
 # サービスキー → ServiceConfig
@@ -37,6 +38,7 @@ SERVICES: dict[str, ServiceConfig] = {
         engine_dimension   = "",          # Coverage GroupBy でエンジン次元は未サポート
         engine_attr        = "",
         instance_detail_key= "ESInstanceDetails",
+        has_nu_flexibility = False,       # OpenSearch RI はサイズ間の柔軟性なし
     ),
     "redshift": ServiceConfig(
         ce_service_name    = "Amazon Redshift",

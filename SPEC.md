@@ -352,11 +352,13 @@ start = end - lookback_days
 **注意**: `Granularity` と `GroupBy` は同時指定不可
 **注意**: エンジン次元はサービスにより異なる。`engine_dimension` が空文字の場合は GroupBy に追加しない
 
-| サービス | エンジン次元 | レスポンス属性キー |
-|---|---|---|
-| rds | `DATABASE_ENGINE` | `databaseEngine` |
-| elasticache | `CACHE_ENGINE` | `cacheEngine` |
-| opensearch | （なし）| （なし）— CE の制限により DATABASE_ENGINE 不可 |
+| サービス | エンジン次元 | レスポンス属性キー | NU 柔軟性 |
+|---|---|---|---|
+| rds | `DATABASE_ENGINE` | `databaseEngine` | あり（ファミリー内サイズ間で適用可） |
+| elasticache | `CACHE_ENGINE` | `cacheEngine` | あり（ファミリー内サイズ間で適用可） |
+| opensearch | （なし）| （なし）— CE の制限により DATABASE_ENGINE 不可 | **なし**（購入時の exact タイプにのみ適用） |
+
+`ServiceConfig.has_nu_flexibility` フラグで管理。`False` の場合、Coverage / Utilization のレポートでインスタンスファミリーグループヘッダーおよび NU サマリ行を省略し、インスタンスタイプ単位でフラット表示する。
 
 レスポンスの `CoveragesByTime[].Groups[]` から以下を抽出（`Attributes` に格納）：
 
@@ -505,19 +507,21 @@ micro=0.4 / small=0.8 / medium=1.6 / large=3.2 / xlarge=6.4 / 2xlarge=12.8 / ...
 
 #### CE セクション（既存）
 
-- `print_utilization(summaries, max_util=None, engines=None, families=None, show_sub_id=False)`
+- `print_utilization(summaries, max_util=None, engines=None, families=None, show_sub_id=False, use_family_summary=True)`
   - `max_util` 指定時は avg_utilization_pct がその値以下のレコードのみ表示
   - `engines` 指定時はエンジンで絞り込み（部分一致・大文字小文字無視）
   - `families` 指定時はインスタンスファミリーで絞り込み（完全一致）
   - `show_sub_id=True` で Subscription ID 列を追加表示
-  - instance family 単位でサマリ行を表示（2件以上の場合）
+  - `use_family_summary=True`（デフォルト）: instance family 単位でサマリ行を表示（2件以上の場合）
+  - `use_family_summary=False`: ファミリーグループなし、インスタンスタイプ単位でフラット表示（OpenSearch 用）
   - 詳細行の `Unused` 列は `hrs` 単位、サマリ行は `NUs` 単位（正規化ユニット時間）
   - **platform 正規化**: `GetReservationUtilization` が返す短縮 platform 名（例: `"Aurora"`）を `_UTIL_PLATFORM_NORMALIZE` で Coverage と同じ命名（`"Aurora MySQL"`）に正規化してからフィルタを適用する。これにより `--engine "aurora mysql"` が Coverage / Utilization の両セクションで一貫して動作する。
-- `print_coverage(summaries, max_coverage=None, engines=None, families=None)`
+- `print_coverage(summaries, max_coverage=None, engines=None, families=None, use_family_summary=True)`
   - `max_coverage` 指定時は coverage_pct がその値以下のレコードのみ表示
   - `engines` 指定時はデータベースエンジンで絞り込み（部分一致・大文字小文字無視）
   - `families` 指定時はインスタンスファミリーで絞り込み（完全一致）
-  - platform → instance family の 2 段階グループで表示
+  - `use_family_summary=True`（デフォルト）: platform → instance family の 2 段階グループで表示
+  - `use_family_summary=False`: ファミリーグループヘッダーおよび NU サマリ行を省略し、インスタンスタイプ単位でフラット表示（OpenSearch 用）
   - ElastiCache では Redis と Valkey が "Redis/Valkey" として統合表示される
   - ファミリーラベルはインスタンスタイプのプレフィックスを動的取得（`db.` / `cache.`）
   - 詳細行の列: Account ID / Instance Type / Region / Coverage / RI (hrs) / OD (hrs) / Total (hrs)
