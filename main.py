@@ -33,6 +33,7 @@ from ri_analyzer.analyzers import coverage as cov_analyzer
 from ri_analyzer.analyzers import utilization as util_analyzer
 from ri_analyzer.analyzers.cur_detail import (
     parse_rds_instances, parse_elasticache_nodes,
+    parse_rds_instance_detail, parse_elasticache_node_detail,
     parse_cur_coverage, parse_unused_ri,
     factcheck_recommendations,
 )
@@ -41,10 +42,10 @@ from ri_analyzer import reporter
 
 _ALL_SERVICES = ["rds", "elasticache", "opensearch"]
 _ALL_SECTIONS = ["expiration", "coverage", "utilization", "recommendations",
-                 "cur_instances", "cur_coverage", "unused_ri"]
+                 "cur_instance_detail", "cur_instances", "cur_coverage", "unused_ri"]
 
 # Athena が必要なセクション
-_ATHENA_SECTIONS = {"cur_instances", "cur_coverage", "unused_ri"}
+_ATHENA_SECTIONS = {"cur_instance_detail", "cur_instances", "cur_coverage", "unused_ri"}
 
 
 def _prompt_multiselect(label: str, choices: list[str]) -> list[str]:
@@ -129,6 +130,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Output format: console (default) or json")
     p.add_argument("--verbose", action="store_true", help="Enable debug logging to stderr")
 
+    p.add_argument(
+        "--min-hours",
+        type=float,
+        default=None,
+        metavar="HRS",
+        help="cur_instance_detail: usage_hours >= HRS のインスタンスのみ表示（RI 購入候補絞り込み）",
+    )
+
     # Athena / CUR オプション
     athena_grp = p.add_argument_group("Athena / CUR options")
     athena_grp.add_argument(
@@ -206,18 +215,23 @@ def main() -> None:
 
     # --athena フラグ → CUR セクションを sections に追加
     if args.athena:
-        for s in ["cur_instances", "cur_coverage", "unused_ri"]:
+        for s in ["cur_instance_detail", "cur_instances", "cur_coverage", "unused_ri"]:
             if s not in sections:
                 sections.append(s)
 
-    # CUR の year / month を決定（デフォルト: 先月）
-    now = datetime.now(timezone.utc)
-    if now.month == 1:
-        _default_cur_year, _default_cur_month = now.year - 1, 12
+    # CUR の期間を決定
+    #   デフォルト: CE API と同じ期間（UTC now - 48h を end とした lookback_days 分）
+    #   --cur-year / --cur-month 指定時: その月全体（月初〜翌月初）
+    ce_start, ce_end = _ce_time_period(cfg.analysis.lookback_days)
+    if args.cur_year and args.cur_month:
+        import calendar
+        cur_start = f"{args.cur_year}-{args.cur_month:02d}-01"
+        last_day = calendar.monthrange(args.cur_year, args.cur_month)[1]
+        next_y = args.cur_year + (1 if args.cur_month == 12 else 0)
+        next_m = 1 if args.cur_month == 12 else args.cur_month + 1
+        cur_end = f"{next_y}-{next_m:02d}-01"
     else:
-        _default_cur_year, _default_cur_month = now.year, now.month - 1
-    cur_year  = args.cur_year  or _default_cur_year
-    cur_month = args.cur_month or _default_cur_month
+        cur_start, cur_end = ce_start, ce_end
 
     # Athena セクションが必要な場合はクライアントを初期化
     athena_client = None
@@ -229,6 +243,7 @@ def main() -> None:
         from ri_analyzer.fetchers.athena import AthenaClient
         from ri_analyzer.fetchers.cur_queries import (
             running_rds_instances, running_elasticache_nodes,
+            rds_instance_detail, elasticache_node_detail,
             ri_coverage_detail, unused_ri_cost,
         )
         athena_client = AthenaClient(cfg.athena, payer_profile=cfg.payer.profile if cfg.payer.profile else None)
@@ -253,7 +268,7 @@ def main() -> None:
         if args.family:
             print(f"  Filter        : family = {', '.join(args.family)}")
         if needs_athena:
-            print(f"  CUR period    : {cur_year}-{cur_month:02d}")
+            print(f"  CUR period    : {cur_start} to {cur_end}")
 
     if cfg.payer.profile:
         payer_profile = cfg.payer.profile
@@ -405,17 +420,45 @@ def main() -> None:
         if _svc_label is None:
             continue  # Athena クエリ未対応サービスはスキップ
 
+        if "cur_instance_detail" in sections:
+            detail_key = f"athena:instance_detail:{svc}:{cur_start}:{cur_end}"
+            cached_detail = None if args.no_cache else cache.get(detail_key)
+            if cached_detail is not None:
+                detail_rows = cached_detail
+                print(f"  CUR instance detail                                  : {len(detail_rows)} instance(s)  [cache {cache.created_at(detail_key)}]")
+            else:
+                print(f"  Fetching CUR instance detail (Athena, {cur_start} to {cur_end})...", end="", flush=True)
+                try:
+                    raw = (rds_instance_detail if svc == "rds" else elasticache_node_detail)(
+                        athena_client, start_date=cur_start, end_date=cur_end,
+                        regions=cfg.analysis.regions if cfg.analysis.regions else None,
+                    )
+                    detail_rows = (parse_rds_instance_detail if svc == "rds" else parse_elasticache_node_detail)(raw)
+                    cache.set(detail_key, detail_rows)
+                    print(f" {len(detail_rows)} instance(s)")
+                except Exception as e:
+                    logger.warning("Skipped CUR instance detail: %s", e)
+                    detail_rows = []
+            if detail_rows:
+                if use_json:
+                    json_results[svc]["cur_instance_detail"] = detail_rows
+                else:
+                    reporter.print_cur_instance_detail(
+                        detail_rows, svc, cur_start, cur_end,
+                        min_hours=args.min_hours,
+                    )
+
         if "cur_instances" in sections or args.athena:
-            cur_inst_key = f"athena:instances:{svc}:{cur_year}:{cur_month}"
+            cur_inst_key = f"athena:instances:{svc}:{cur_start}:{cur_end}"
             cached_inst = None if args.no_cache else cache.get(cur_inst_key)
             if cached_inst is not None:
                 cur_inst_rows = cached_inst
                 print(f"  CUR instances                                        : {len(cur_inst_rows)} row(s)  [cache {cache.created_at(cur_inst_key)}]")
             else:
-                print(f"  Fetching CUR instances (Athena, {cur_year}-{cur_month:02d})...", end="", flush=True)
+                print(f"  Fetching CUR instances (Athena, {cur_start} to {cur_end})...", end="", flush=True)
                 try:
                     raw = (running_rds_instances if svc == "rds" else running_elasticache_nodes)(
-                        athena_client, year=cur_year, month=cur_month,
+                        athena_client, start_date=cur_start, end_date=cur_end,
                         regions=cfg.analysis.regions if cfg.analysis.regions else None,
                     )
                     cur_inst_rows = (parse_rds_instances if svc == "rds" else parse_elasticache_nodes)(raw)
@@ -429,7 +472,7 @@ def main() -> None:
                 if use_json:
                     json_results[svc]["cur_instances"] = cur_inst_rows
                 else:
-                    reporter.print_cur_instances(cur_inst_rows, svc, cur_year, cur_month)
+                    reporter.print_cur_instances(cur_inst_rows, svc, cur_start, cur_end)
 
             # CE Recommendation ファクトチェック（recommendations も実行済みの場合）
             if args.athena and "recommendations" in sections and rec_groups and cur_inst_rows:
@@ -441,18 +484,18 @@ def main() -> None:
                 if use_json:
                     json_results[svc]["ce_factcheck"] = checks
                 else:
-                    reporter.print_ce_factcheck(checks, svc, cur_year, cur_month)
+                    reporter.print_ce_factcheck(checks, svc, cur_start, cur_end)
 
         if "cur_coverage" in sections:
-            cur_cov_key = f"athena:coverage:{svc}:{cur_year}:{cur_month}"
+            cur_cov_key = f"athena:coverage:{svc}:{cur_start}:{cur_end}"
             cached_cov = None if args.no_cache else cache.get(cur_cov_key)
             if cached_cov is not None:
                 cur_cov_rows = cached_cov
                 print(f"  CUR coverage                                         : {len(cur_cov_rows)} row(s)  [cache {cache.created_at(cur_cov_key)}]")
             else:
-                print(f"  Fetching CUR coverage (Athena, {cur_year}-{cur_month:02d})...", end="", flush=True)
+                print(f"  Fetching CUR coverage (Athena, {cur_start} to {cur_end})...", end="", flush=True)
                 try:
-                    raw = ri_coverage_detail(athena_client, year=cur_year, month=cur_month, service=_svc_label)
+                    raw = ri_coverage_detail(athena_client, start_date=cur_start, end_date=cur_end, service=_svc_label)
                     cur_cov_rows = parse_cur_coverage(raw)
                     cache.set(cur_cov_key, cur_cov_rows)
                     print(f" {len(cur_cov_rows)} row(s)")
@@ -463,18 +506,18 @@ def main() -> None:
                 if use_json:
                     json_results[svc]["cur_coverage"] = cur_cov_rows
                 else:
-                    reporter.print_cur_coverage(cur_cov_rows, svc, cur_year, cur_month)
+                    reporter.print_cur_coverage(cur_cov_rows, svc, cur_start, cur_end)
 
         if "unused_ri" in sections:
-            unused_key = f"athena:unused_ri:{svc}:{cur_year}:{cur_month}"
+            unused_key = f"athena:unused_ri:{svc}:{cur_start}:{cur_end}"
             cached_unused = None if args.no_cache else cache.get(unused_key)
             if cached_unused is not None:
                 unused_rows = cached_unused
                 print(f"  CUR unused RI                                        : {len(unused_rows)} row(s)  [cache {cache.created_at(unused_key)}]")
             else:
-                print(f"  Fetching CUR unused RI (Athena, {cur_year}-{cur_month:02d})...", end="", flush=True)
+                print(f"  Fetching CUR unused RI (Athena, {cur_start} to {cur_end})...", end="", flush=True)
                 try:
-                    raw = unused_ri_cost(athena_client, year=cur_year, month=cur_month, service=_svc_label)
+                    raw = unused_ri_cost(athena_client, start_date=cur_start, end_date=cur_end, service=_svc_label)
                     unused_rows = parse_unused_ri(raw)
                     cache.set(unused_key, unused_rows)
                     print(f" {len(unused_rows)} row(s)")

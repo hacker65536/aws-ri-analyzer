@@ -1,50 +1,52 @@
 """CUR (Cost and Usage Report) よく使うクエリ集
 
 全クエリは AthenaClient.run_query() を通して実行する。
-パーティション条件（year / month）は各クエリに明示的に埋め込む。
+日付範囲は CE API と同じ period (start_date / end_date) で指定する。
+パーティション条件（year / month）は date_range_filter() が自動生成する。
 
 使い方:
-    from ri_analyzer.fetchers.athena import AthenaClient, last_month_filter
-    from ri_analyzer.fetchers.cur_queries import (
-        running_rds_instances,
-        ce_recommendation_factcheck,
-    )
+    from ri_analyzer.fetchers.athena import AthenaClient, date_range_filter
+    from ri_analyzer.fetchers.cur_queries import rds_instance_detail
     from ri_analyzer.config import Config
 
     cfg = Config.load()
     client = AthenaClient(cfg.athena, payer_profile="...")
-    rows = running_rds_instances(client, year=2024, month=1)
+    rows = rds_instance_detail(client, start_date="2026-03-18", end_date="2026-03-25")
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from ri_analyzer.fetchers.athena import AthenaClient, partition_filter
+from ri_analyzer.fetchers.athena import AthenaClient, date_range_filter
 
 
 # ---------------------------------------------------------------------------
-# 1. 稼働中 RDS インスタンス一覧
+# 1. 稼働中 RDS インスタンス一覧（instance_type 集計）
 # ---------------------------------------------------------------------------
 
 def running_rds_instances(
     client: AthenaClient,
-    year: int | str,
-    month: int | str,
+    start_date: str,
+    end_date: str,
     *,
     regions: Optional[List[str]] = None,
     account_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """稼働中 RDS インスタンスの usage hours を account / region / instance_type 別に集計する。
 
+    Parameters
+    ----------
+    start_date : 'YYYY-MM-DD' 形式（inclusive）
+    end_date   : 'YYYY-MM-DD' 形式（exclusive）
+
     Returns
     -------
     list of dict with keys:
-        line_item_usage_account_id, product_region, product_instance_type,
-        product_database_engine, product_deployment_option,
-        sum_usage_hours, sum_unblended_cost
+        account_id, region, instance_type, engine, deployment,
+        usage_hours, unblended_cost
     """
-    pf = partition_filter(year, month)
+    partition_cond, date_cond = date_range_filter(start_date, end_date)
 
     region_filter = ""
     if regions:
@@ -61,13 +63,14 @@ def running_rds_instances(
 SELECT
     line_item_usage_account_id          AS account_id,
     product_region                      AS region,
-    product_instance_type              AS instance_type,
+    product_instance_type               AS instance_type,
     product_database_engine             AS engine,
     product_deployment_option           AS deployment,
     SUM(line_item_usage_amount)         AS usage_hours,
     SUM(line_item_unblended_cost)       AS unblended_cost
 FROM {cfg.database}.{cfg.table}
-WHERE {pf}
+WHERE {partition_cond}
+  AND {date_cond}
   AND line_item_product_code = 'AmazonRDS'
   AND line_item_line_item_type IN ('Usage', 'SavingsPlanCoveredUsage')
   AND product_instance_type != ''
@@ -81,18 +84,23 @@ ORDER BY usage_hours DESC
 
 
 # ---------------------------------------------------------------------------
-# 2. 稼働中 ElastiCache インスタンス一覧
+# 2. 稼働中 ElastiCache インスタンス一覧（instance_type 集計）
 # ---------------------------------------------------------------------------
 
 def running_elasticache_nodes(
     client: AthenaClient,
-    year: int | str,
-    month: int | str,
+    start_date: str,
+    end_date: str,
     *,
     regions: Optional[List[str]] = None,
     account_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """稼働中 ElastiCache ノードの usage hours を集計する。
+
+    Parameters
+    ----------
+    start_date : 'YYYY-MM-DD' 形式（inclusive）
+    end_date   : 'YYYY-MM-DD' 形式（exclusive）
 
     Returns
     -------
@@ -100,7 +108,7 @@ def running_elasticache_nodes(
         account_id, region, instance_type, cache_engine,
         usage_hours, unblended_cost
     """
-    pf = partition_filter(year, month)
+    partition_cond, date_cond = date_range_filter(start_date, end_date)
 
     region_filter = ""
     if regions:
@@ -117,12 +125,13 @@ def running_elasticache_nodes(
 SELECT
     line_item_usage_account_id          AS account_id,
     product_region                      AS region,
-    product_instance_type             AS instance_type,
+    product_instance_type               AS instance_type,
     product_cache_engine                AS cache_engine,
     SUM(line_item_usage_amount)         AS usage_hours,
     SUM(line_item_unblended_cost)       AS unblended_cost
 FROM {cfg.database}.{cfg.table}
-WHERE {pf}
+WHERE {partition_cond}
+  AND {date_cond}
   AND line_item_product_code = 'AmazonElastiCache'
   AND line_item_line_item_type IN ('Usage', 'SavingsPlanCoveredUsage')
   AND product_instance_type != ''
@@ -141,8 +150,8 @@ ORDER BY usage_hours DESC
 
 def ce_recommendation_factcheck_rds(
     client: AthenaClient,
-    year: int | str,
-    month: int | str,
+    start_date: str,
+    end_date: str,
     instance_type: str,
     region: str,
     engine: str,
@@ -151,10 +160,10 @@ def ce_recommendation_factcheck_rds(
 
     CE Recommendation と突き合わせることで推奨精度を検証できる。
 
-    典型的な使い方:
-        ce が "db.r5.xlarge (MySQL, ap-northeast-1) を 2 台推奨" と言っているとき、
-        CUR 側で実際に何時間稼働していたかを確認する。
-        720h/month * 2 台 = 1440h が基準値。
+    Parameters
+    ----------
+    start_date : 'YYYY-MM-DD' 形式（inclusive）
+    end_date   : 'YYYY-MM-DD' 形式（exclusive）
 
     Returns
     -------
@@ -162,13 +171,13 @@ def ce_recommendation_factcheck_rds(
         account_id, region, instance_type, engine, deployment,
         usage_hours, ri_hours, od_hours
     """
-    pf = partition_filter(year, month)
+    partition_cond, date_cond = date_range_filter(start_date, end_date)
     cfg = client._cfg
     sql = f"""
 SELECT
     line_item_usage_account_id              AS account_id,
     product_region                          AS region,
-    product_instance_type                  AS instance_type,
+    product_instance_type                   AS instance_type,
     product_database_engine                 AS engine,
     product_deployment_option               AS deployment,
     SUM(line_item_usage_amount)             AS usage_hours,
@@ -181,7 +190,8 @@ SELECT
              THEN line_item_usage_amount ELSE 0.0 END
     )                                       AS od_hours
 FROM {cfg.database}.{cfg.table}
-WHERE {pf}
+WHERE {partition_cond}
+  AND {date_cond}
   AND line_item_product_code = 'AmazonRDS'
   AND product_instance_type = '{instance_type}'
   AND product_region = '{region}'
@@ -194,13 +204,151 @@ ORDER BY usage_hours DESC
 
 
 # ---------------------------------------------------------------------------
-# 4. RI カバレッジ詳細（RI 使用時間 vs OD 使用時間）
+# 4. resource_id 単位のインスタンス稼働実績（RI 購入精査の基本機能）
+# ---------------------------------------------------------------------------
+
+def rds_instance_detail(
+    client: AthenaClient,
+    start_date: str,
+    end_date: str,
+    *,
+    regions: Optional[List[str]] = None,
+    account_ids: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """RDS インスタンスを resource_id 単位で集計し、RI/OD の内訳を返す。
+
+    CE Coverage では個体識別ができないため、CUR の line_item_resource_id を使って
+    各インスタンスが実際に何時間稼働したかを取得する。
+    短命なインスタンス（usage_hours が少ない）を RI 購入候補から除外する判断に使う。
+
+    Parameters
+    ----------
+    start_date : 'YYYY-MM-DD' 形式（inclusive）
+    end_date   : 'YYYY-MM-DD' 形式（exclusive）
+
+    Returns
+    -------
+    list of dict with keys:
+        resource_id, account_id, region, instance_type, engine, deployment,
+        usage_hours, ri_hours, od_hours
+    """
+    partition_cond, date_cond = date_range_filter(start_date, end_date)
+
+    region_filter = ""
+    if regions:
+        quoted = ", ".join(f"'{r}'" for r in regions)
+        region_filter = f"AND product_region IN ({quoted})"
+
+    account_filter = ""
+    if account_ids:
+        quoted = ", ".join(f"'{a}'" for a in account_ids)
+        account_filter = f"AND line_item_usage_account_id IN ({quoted})"
+
+    cfg = client._cfg
+    sql = f"""
+SELECT
+    line_item_resource_id               AS resource_id,
+    line_item_usage_account_id          AS account_id,
+    product_region                      AS region,
+    product_instance_type               AS instance_type,
+    product_database_engine             AS engine,
+    product_deployment_option           AS deployment,
+    SUM(line_item_usage_amount)         AS usage_hours,
+    SUM(
+        CASE WHEN line_item_line_item_type IN ('DiscountedUsage', 'SavingsPlanCoveredUsage')
+             THEN line_item_usage_amount ELSE 0.0 END
+    )                                   AS ri_hours,
+    SUM(
+        CASE WHEN line_item_line_item_type = 'Usage'
+             THEN line_item_usage_amount ELSE 0.0 END
+    )                                   AS od_hours
+FROM {cfg.database}.{cfg.table}
+WHERE {partition_cond}
+  AND {date_cond}
+  AND line_item_product_code = 'AmazonRDS'
+  AND line_item_line_item_type IN ('Usage', 'DiscountedUsage', 'SavingsPlanCoveredUsage')
+  AND product_instance_type != ''
+  AND line_item_usage_type LIKE '%InstanceUsage%'
+  {region_filter}
+  {account_filter}
+GROUP BY 1, 2, 3, 4, 5, 6
+ORDER BY usage_hours DESC
+"""
+    return client.run_query(sql)
+
+
+def elasticache_node_detail(
+    client: AthenaClient,
+    start_date: str,
+    end_date: str,
+    *,
+    regions: Optional[List[str]] = None,
+    account_ids: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """ElastiCache ノードを resource_id 単位で集計し、RI/OD の内訳を返す。
+
+    Parameters
+    ----------
+    start_date : 'YYYY-MM-DD' 形式（inclusive）
+    end_date   : 'YYYY-MM-DD' 形式（exclusive）
+
+    Returns
+    -------
+    list of dict with keys:
+        resource_id, account_id, region, instance_type, engine,
+        usage_hours, ri_hours, od_hours
+    """
+    partition_cond, date_cond = date_range_filter(start_date, end_date)
+
+    region_filter = ""
+    if regions:
+        quoted = ", ".join(f"'{r}'" for r in regions)
+        region_filter = f"AND product_region IN ({quoted})"
+
+    account_filter = ""
+    if account_ids:
+        quoted = ", ".join(f"'{a}'" for a in account_ids)
+        account_filter = f"AND line_item_usage_account_id IN ({quoted})"
+
+    cfg = client._cfg
+    sql = f"""
+SELECT
+    line_item_resource_id               AS resource_id,
+    line_item_usage_account_id          AS account_id,
+    product_region                      AS region,
+    product_instance_type               AS instance_type,
+    product_cache_engine                AS engine,
+    SUM(line_item_usage_amount)         AS usage_hours,
+    SUM(
+        CASE WHEN line_item_line_item_type IN ('DiscountedUsage', 'SavingsPlanCoveredUsage')
+             THEN line_item_usage_amount ELSE 0.0 END
+    )                                   AS ri_hours,
+    SUM(
+        CASE WHEN line_item_line_item_type = 'Usage'
+             THEN line_item_usage_amount ELSE 0.0 END
+    )                                   AS od_hours
+FROM {cfg.database}.{cfg.table}
+WHERE {partition_cond}
+  AND {date_cond}
+  AND line_item_product_code = 'AmazonElastiCache'
+  AND line_item_line_item_type IN ('Usage', 'DiscountedUsage', 'SavingsPlanCoveredUsage')
+  AND product_instance_type != ''
+  {region_filter}
+  {account_filter}
+GROUP BY 1, 2, 3, 4, 5
+ORDER BY usage_hours DESC
+"""
+    return client.run_query(sql)
+
+
+# ---------------------------------------------------------------------------
+# 6. RI カバレッジ詳細（RI 使用時間 vs OD 使用時間）
 # ---------------------------------------------------------------------------
 
 def ri_coverage_detail(
     client: AthenaClient,
-    year: int | str,
-    month: int | str,
+    start_date: str,
+    end_date: str,
     service: str = "AmazonRDS",
     *,
     regions: Optional[List[str]] = None,
@@ -211,7 +359,9 @@ def ri_coverage_detail(
 
     Parameters
     ----------
-    service : 'AmazonRDS' | 'AmazonElastiCache'
+    start_date : 'YYYY-MM-DD' 形式（inclusive）
+    end_date   : 'YYYY-MM-DD' 形式（exclusive）
+    service    : 'AmazonRDS' | 'AmazonElastiCache'
 
     Returns
     -------
@@ -219,19 +369,14 @@ def ri_coverage_detail(
         account_id, region, instance_type,
         ri_hours, od_hours, total_hours, coverage_pct
     """
-    pf = partition_filter(year, month)
+    partition_cond, date_cond = date_range_filter(start_date, end_date)
 
     region_filter = ""
     if regions:
         quoted = ", ".join(f"'{r}'" for r in regions)
         region_filter = f"AND product_region IN ({quoted})"
 
-    # サービスごとのインスタンスタイプ列名
-    instance_col = (
-        "product_instance_type"
-        if service == "AmazonRDS"
-        else "product_instance_type"
-    )
+    instance_col = "product_instance_type"
 
     cfg = client._cfg
     sql = f"""
@@ -256,7 +401,8 @@ SELECT
         1
     )                                   AS coverage_pct
 FROM {cfg.database}.{cfg.table}
-WHERE {pf}
+WHERE {partition_cond}
+  AND {date_cond}
   AND line_item_product_code = '{service}'
   AND line_item_line_item_type IN ('Usage', 'DiscountedUsage')
   AND {instance_col} != ''
@@ -268,27 +414,35 @@ ORDER BY total_hours DESC
 
 
 # ---------------------------------------------------------------------------
-# 5. 未使用 RI 費用（RI は購入したが使われなかった時間）
+# 7. 未使用 RI 費用（RI は購入したが使われなかった時間）
+#    RIFee は月次固定費のため、パーティション（年月）のみでフィルタする
 # ---------------------------------------------------------------------------
 
 def unused_ri_cost(
     client: AthenaClient,
-    year: int | str,
-    month: int | str,
+    start_date: str,
+    end_date: str,
     service: str = "AmazonRDS",
 ) -> List[Dict[str, Any]]:
     """未使用 RI の費用を subscription_id 別に集計する。
 
     line_item_line_item_type = 'RIFee' が RI 固定費（使用有無に関わらず課金）。
-    この金額が大きい = 無駄な RI がある。
+    RIFee は月次レコードのため、start_date/end_date から対象月のパーティションを
+    決定し、月全体のデータを返す（日付範囲フィルタは適用しない）。
+
+    Parameters
+    ----------
+    start_date : 'YYYY-MM-DD' 形式（対象月の特定に使用）
+    end_date   : 'YYYY-MM-DD' 形式（対象月の特定に使用）
 
     Returns
     -------
     list of dict with keys:
-        reservation_id, account_id, region, usage_type,
+        reservation_arn, account_id, region, usage_type,
         ri_fee_cost, quantity
     """
-    pf = partition_filter(year, month)
+    # RIFee は月次固定費なので partition のみ（日付範囲フィルタなし）
+    partition_cond, _ = date_range_filter(start_date, end_date)
     cfg = client._cfg
     sql = f"""
 SELECT
@@ -299,7 +453,7 @@ SELECT
     SUM(line_item_unblended_cost)       AS ri_fee_cost,
     SUM(line_item_usage_amount)         AS quantity
 FROM {cfg.database}.{cfg.table}
-WHERE {pf}
+WHERE {partition_cond}
   AND line_item_product_code = '{service}'
   AND line_item_line_item_type = 'RIFee'
 GROUP BY 1, 2, 3, 4

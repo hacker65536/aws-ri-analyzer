@@ -32,6 +32,40 @@ class CurInstanceRow:
 
 
 @dataclass
+class CurInstanceDetailRow:
+    """resource_id 単位の RDS/ElastiCache インスタンス稼働実績。
+
+    CE Coverage では個体識別できないため、CUR の line_item_resource_id から取得する。
+    usage_hours が少ない（短命な）インスタンスを RI 購入候補から除外する判断に使う。
+    """
+    resource_id: str
+    account_id: str
+    region: str
+    instance_type: str
+    engine: str
+    deployment: str       # RDS: "Single-AZ" など / ElastiCache: ""
+    usage_hours: float
+    ri_hours: float
+    od_hours: float
+
+    @property
+    def coverage_pct(self) -> float:
+        if self.usage_hours == 0:
+            return 0.0
+        return 100.0 * self.ri_hours / self.usage_hours
+
+    @property
+    def run_days(self) -> float:
+        """稼働日数の推定（usage_hours ÷ 24）"""
+        return self.usage_hours / 24.0
+
+    @property
+    def resource_name(self) -> str:
+        """ARN から末尾の識別子だけを返す（表示用短縮名）"""
+        return self.resource_id.split(":")[-1] if self.resource_id else ""
+
+
+@dataclass
 class CurCoverageRow:
     """CUR ベースの RI カバレッジ（account × region × instance_type）"""
     account_id: str
@@ -112,6 +146,42 @@ def parse_elasticache_nodes(rows: list[dict[str, Any]]) -> list[CurInstanceRow]:
             deployment="",
             usage_hours=_f(r.get("usage_hours")),
             unblended_cost=_f(r.get("unblended_cost")),
+        ))
+    return result
+
+
+def parse_rds_instance_detail(rows: list[dict[str, Any]]) -> list[CurInstanceDetailRow]:
+    """rds_instance_detail() の結果を CurInstanceDetailRow に変換する。"""
+    result = []
+    for r in rows:
+        result.append(CurInstanceDetailRow(
+            resource_id=r.get("resource_id", ""),
+            account_id=r.get("account_id", ""),
+            region=r.get("region", ""),
+            instance_type=r.get("instance_type", ""),
+            engine=r.get("engine", ""),
+            deployment=r.get("deployment", ""),
+            usage_hours=_f(r.get("usage_hours")),
+            ri_hours=_f(r.get("ri_hours")),
+            od_hours=_f(r.get("od_hours")),
+        ))
+    return result
+
+
+def parse_elasticache_node_detail(rows: list[dict[str, Any]]) -> list[CurInstanceDetailRow]:
+    """elasticache_node_detail() の結果を CurInstanceDetailRow に変換する。"""
+    result = []
+    for r in rows:
+        result.append(CurInstanceDetailRow(
+            resource_id=r.get("resource_id", ""),
+            account_id=r.get("account_id", ""),
+            region=r.get("region", ""),
+            instance_type=r.get("instance_type", ""),
+            engine=r.get("engine", ""),
+            deployment="",
+            usage_hours=_f(r.get("usage_hours")),
+            ri_hours=_f(r.get("ri_hours")),
+            od_hours=_f(r.get("od_hours")),
         ))
     return result
 

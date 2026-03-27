@@ -13,6 +13,7 @@ from ri_analyzer.reporter.ce_sections import (     # noqa: F401
 )
 from ri_analyzer.reporter.cur_sections import (    # noqa: F401
     print_cur_instances,
+    print_cur_instance_detail,
     print_cur_coverage,
     print_unused_ri,
     print_ce_factcheck,

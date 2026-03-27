@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from ri_analyzer.analyzers.cur_detail import (
     CurInstanceRow,
+    CurInstanceDetailRow,
     CurCoverageRow,
     UnusedRiRow,
     RecommendationFactcheck,
 )
+from datetime import date as _date
+
 from ri_analyzer.reporter._base import _RED, _YELLOW, _GREEN, _CYAN, _BOLD, _RESET, _c, _header
 
 
@@ -18,10 +21,10 @@ from ri_analyzer.reporter._base import _RED, _YELLOW, _GREEN, _CYAN, _BOLD, _RES
 def print_cur_instances(
     rows: list[CurInstanceRow],
     service: str,
-    year: int,
-    month: int,
+    start_date: str,
+    end_date: str,
 ) -> None:
-    _header(f"CUR Running Instances  [{service.upper()}]  ({year}-{month:02d})")
+    _header(f"CUR Running Instances  [{service.upper()}]  ({start_date} to {end_date})")
 
     if not rows:
         print("\n  No data.")
@@ -62,16 +65,122 @@ def print_cur_instances(
 
 
 # ──────────────────────────────────────────────
+# CUR: Instance Detail（resource_id 単位）
+# ──────────────────────────────────────────────
+
+def print_cur_instance_detail(
+    rows: list[CurInstanceDetailRow],
+    service: str,
+    start_date: str,
+    end_date: str,
+    *,
+    min_hours: float | None = None,
+) -> None:
+    """resource_id 単位のインスタンス稼働実績を表示する。
+
+    Parameters
+    ----------
+    min_hours : RI 購入候補フィルタ。指定時は usage_hours >= min_hours の行のみ表示。
+                未指定時は全行表示し、短命なインスタンスを黄色でハイライト。
+    """
+    # クエリ期間の合計時間を算出（短命判定の基準に使う）
+    period_days = (_date.fromisoformat(end_date) - _date.fromisoformat(start_date)).days
+    period_hours = period_days * 24
+    # 期間の 50% 未満しか稼働していないインスタンスを「短命」とみなす
+    short_lived_threshold = period_hours * 0.5
+
+    filter_label = f"  (min {min_hours:.0f}h filter applied)" if min_hours is not None else ""
+    _header(
+        f"CUR Instance Detail  [{service.upper()}]  ({start_date} to {end_date})"
+        f"  period={period_hours:.0f}h{filter_label}"
+    )
+
+    if not rows:
+        print("\n  No data.")
+        return
+
+    display_rows = [r for r in rows if r.usage_hours >= min_hours] if min_hours is not None else rows
+    short_lived_skipped = len(rows) - len(display_rows) if min_hours is not None else 0
+
+    if not display_rows:
+        print(f"\n  All {len(rows)} instance(s) are below the {min_hours:.0f}h threshold.")
+        return
+
+    col = (
+        f"\n  {'Resource Name':<36}  {'Account ID':<14}  {'Type':<18}"
+        f"  {'Engine':<16}  {'Period%':>7}  {'hrs':>6}  {'RI%':>5}  {'RI hrs':>7}  {'OD hrs':>7}"
+    )
+    print(col)
+    print(f"  {'-' * 130}")
+
+    # engine でグループ化
+    engines: list[str] = []
+    seen: set[str] = set()
+    for r in display_rows:
+        if r.engine not in seen:
+            engines.append(r.engine)
+            seen.add(r.engine)
+
+    total_od_hours = 0.0
+    short_lived_count = 0
+
+    for eng in engines:
+        group = [r for r in display_rows if r.engine == eng]
+        print(f"\n  [{eng}]")
+        for r in group:
+            # 期間中の稼働割合（期間時間に対する usage_hours の比率）
+            run_pct = (r.usage_hours / period_hours * 100) if period_hours > 0 else 0.0
+            is_short = r.usage_hours < short_lived_threshold
+            if is_short:
+                short_lived_count += 1
+
+            name = r.resource_name[:36]
+            run_pct_str = f"{run_pct:6.1f}%"
+            hrs_str     = f"{r.usage_hours:6.0f}"
+            ri_pct_str  = f"{r.coverage_pct:4.0f}%"
+
+            if is_short:
+                # 短命なインスタンスは行全体を黄色
+                line = (
+                    f"  {name:<36}  {r.account_id:<14}  {r.instance_type:<18}"
+                    f"  {r.engine:<16}  {run_pct_str}  {hrs_str}  {ri_pct_str}"
+                    f"  {r.ri_hours:>7.1f}  {r.od_hours:>7.1f}"
+                )
+                print(_c(line, _YELLOW))
+            else:
+                ri_pct_color = _GREEN if r.coverage_pct >= 90 else (_YELLOW if r.coverage_pct >= 50 else _RED)
+                ri_pct_colored = _c(ri_pct_str, ri_pct_color)
+                print(
+                    f"  {name:<36}  {r.account_id:<14}  {r.instance_type:<18}"
+                    f"  {r.engine:<16}  {run_pct_str}  {hrs_str}  {ri_pct_colored}"
+                    f"  {r.ri_hours:>7.1f}  {r.od_hours:>7.1f}"
+                )
+            total_od_hours += r.od_hours
+
+    print()
+    stable_count = len(display_rows) - short_lived_count
+    print(_c(
+        f"  Instances shown: {len(display_rows)}"
+        f"  |  stable (>={short_lived_threshold:.0f}h / 50% of period): {stable_count}"
+        f"  |  short-lived: {short_lived_count}",
+        _BOLD,
+    ))
+    print(_c(f"  Total OD hours (RI 購入対象候補): {total_od_hours:,.1f} hrs", _BOLD))
+    if short_lived_skipped:
+        print(_c(f"  Skipped (< {min_hours:.0f}h): {short_lived_skipped} instance(s)", _YELLOW))
+
+
+# ──────────────────────────────────────────────
 # CUR: RI Coverage Detail
 # ──────────────────────────────────────────────
 
 def print_cur_coverage(
     rows: list[CurCoverageRow],
     service: str,
-    year: int,
-    month: int,
+    start_date: str,
+    end_date: str,
 ) -> None:
-    _header(f"CUR RI Coverage Detail  [{service.upper()}]  ({year}-{month:02d})")
+    _header(f"CUR RI Coverage Detail  [{service.upper()}]  ({start_date} to {end_date})")
 
     if not rows:
         print("\n  No data.")
@@ -117,10 +226,10 @@ def print_cur_coverage(
 def print_unused_ri(
     rows: list[UnusedRiRow],
     service: str,
-    year: int,
-    month: int,
+    start_date: str,
+    end_date: str,
 ) -> None:
-    _header(f"CUR Unused RI Fee  [{service.upper()}]  ({year}-{month:02d})")
+    _header(f"CUR Unused RI Fee  [{service.upper()}]  ({start_date} to {end_date})")
 
     if not rows:
         print("\n  No unused RI found.")
@@ -157,10 +266,10 @@ def print_unused_ri(
 def print_ce_factcheck(
     checks: list[RecommendationFactcheck],
     service: str,
-    year: int,
-    month: int,
+    start_date: str,
+    end_date: str,
 ) -> None:
-    _header(f"CE Recommendation Fact-check  [{service.upper()}]  (CUR: {year}-{month:02d})")
+    _header(f"CE Recommendation Fact-check  [{service.upper()}]  (CUR: {start_date} to {end_date})")
 
     if not checks:
         print("\n  No recommendations to check.")

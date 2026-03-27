@@ -513,6 +513,57 @@ def _bind_params(sql: str, params: List[str]) -> str:
     return "".join(result)
 
 
+def date_range_filter(start_date: str, end_date: str) -> tuple[str, str]:
+    """CE と同じ日付範囲で CUR をフィルタするための条件文字列を生成する。
+
+    Parameters
+    ----------
+    start_date : 'YYYY-MM-DD' 形式（inclusive）
+    end_date   : 'YYYY-MM-DD' 形式（exclusive）
+
+    Returns
+    -------
+    partition_cond : year/month パーティション条件（複数月にまたがる場合は OR）
+    date_cond      : line_item_usage_start_date の範囲条件（WHERE 句に AND で追加する）
+
+    Examples
+    --------
+    >>> partition_cond, date_cond = date_range_filter('2026-03-18', '2026-03-25')
+    >>> # partition_cond = "year = '2026' AND month = '3'"
+    >>> # date_cond = "line_item_usage_start_date >= TIMESTAMP '2026-03-18 00:00:00'
+    >>>              AND line_item_usage_start_date <  TIMESTAMP '2026-03-25 00:00:00'"
+    """
+    from datetime import date as _date
+
+    start = _date.fromisoformat(start_date)
+    end   = _date.fromisoformat(end_date)
+
+    # 対象月を列挙（start 月 ～ end の属する月まで）
+    months: list[tuple[int, int]] = []
+    d = _date(start.year, start.month, 1)
+    end_month_start = _date(end.year, end.month, 1)
+    while d <= end_month_start:
+        months.append((d.year, d.month))
+        if d.month == 12:
+            d = _date(d.year + 1, 1, 1)
+        else:
+            d = _date(d.year, d.month + 1, 1)
+
+    if len(months) == 1:
+        y, m = months[0]
+        partition_cond = f"year = '{y}' AND month = '{m}'"
+    else:
+        parts = [f"(year = '{y}' AND month = '{m}')" for y, m in months]
+        partition_cond = "(" + "\n     OR ".join(parts) + ")"
+
+    date_cond = (
+        f"line_item_usage_start_date >= TIMESTAMP '{start_date} 00:00:00'\n"
+        f"  AND line_item_usage_start_date <  TIMESTAMP '{end_date} 00:00:00'"
+    )
+
+    return partition_cond, date_cond
+
+
 def partition_filter(year: int | str, month: int | str) -> str:
     """よく使うパーティション条件文字列を生成するヘルパー。
 
