@@ -34,8 +34,8 @@ SERVICES: dict[str, ServiceConfig] = {
     ),
     "opensearch": ServiceConfig(
         ce_service_name    = "Amazon OpenSearch Service",
-        engine_dimension   = "DATABASE_ENGINE",
-        engine_attr        = "databaseEngine",
+        engine_dimension   = "",          # Coverage GroupBy でエンジン次元は未サポート
+        engine_attr        = "",
         instance_detail_key= "ESInstanceDetails",
     ),
     "redshift": ServiceConfig(

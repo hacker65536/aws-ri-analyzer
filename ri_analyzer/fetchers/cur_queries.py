@@ -342,6 +342,130 @@ ORDER BY usage_hours DESC
 
 
 # ---------------------------------------------------------------------------
+# 5a. 稼働中 OpenSearch ドメイン一覧（instance_type 集計）
+# ---------------------------------------------------------------------------
+
+def running_opensearch_domains(
+    client: AthenaClient,
+    start_date: str,
+    end_date: str,
+    *,
+    regions: Optional[List[str]] = None,
+    account_ids: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """稼働中 OpenSearch インスタンスの usage hours を account / region / instance_type 別に集計する。
+
+    Parameters
+    ----------
+    start_date : 'YYYY-MM-DD' 形式（inclusive）
+    end_date   : 'YYYY-MM-DD' 形式（exclusive）
+
+    Returns
+    -------
+    list of dict with keys:
+        account_id, region, instance_type, usage_hours, unblended_cost
+    """
+    partition_cond, date_cond = date_range_filter(start_date, end_date)
+
+    region_filter = ""
+    if regions:
+        quoted = ", ".join(f"'{r}'" for r in regions)
+        region_filter = f"AND product_region IN ({quoted})"
+
+    account_filter = ""
+    if account_ids:
+        quoted = ", ".join(f"'{a}'" for a in account_ids)
+        account_filter = f"AND line_item_usage_account_id IN ({quoted})"
+
+    cfg = client._cfg
+    sql = f"""
+SELECT
+    line_item_usage_account_id          AS account_id,
+    product_region                      AS region,
+    product_instance_type               AS instance_type,
+    SUM(line_item_usage_amount)         AS usage_hours,
+    SUM(line_item_unblended_cost)       AS unblended_cost
+FROM {cfg.database}.{cfg.table}
+WHERE {partition_cond}
+  AND {date_cond}
+  AND line_item_product_code = 'AmazonES'
+  AND line_item_line_item_type IN ('Usage', 'SavingsPlanCoveredUsage')
+  AND product_instance_type LIKE '%.search'
+  {region_filter}
+  {account_filter}
+GROUP BY 1, 2, 3
+ORDER BY usage_hours DESC
+"""
+    return client.run_query(sql)
+
+
+def opensearch_domain_detail(
+    client: AthenaClient,
+    start_date: str,
+    end_date: str,
+    *,
+    regions: Optional[List[str]] = None,
+    account_ids: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """OpenSearch インスタンスを resource_id 単位で集計し、RI/OD の内訳を返す。
+
+    CE Coverage では個体識別ができないため、CUR の line_item_resource_id を使って
+    各ドメインが実際に何時間稼働したかを取得する。
+
+    Parameters
+    ----------
+    start_date : 'YYYY-MM-DD' 形式（inclusive）
+    end_date   : 'YYYY-MM-DD' 形式（exclusive）
+
+    Returns
+    -------
+    list of dict with keys:
+        resource_id, account_id, region, instance_type,
+        usage_hours, ri_hours, od_hours
+    """
+    partition_cond, date_cond = date_range_filter(start_date, end_date)
+
+    region_filter = ""
+    if regions:
+        quoted = ", ".join(f"'{r}'" for r in regions)
+        region_filter = f"AND product_region IN ({quoted})"
+
+    account_filter = ""
+    if account_ids:
+        quoted = ", ".join(f"'{a}'" for a in account_ids)
+        account_filter = f"AND line_item_usage_account_id IN ({quoted})"
+
+    cfg = client._cfg
+    sql = f"""
+SELECT
+    line_item_resource_id               AS resource_id,
+    line_item_usage_account_id          AS account_id,
+    product_region                      AS region,
+    product_instance_type               AS instance_type,
+    SUM(line_item_usage_amount)         AS usage_hours,
+    SUM(
+        CASE WHEN line_item_line_item_type = 'DiscountedUsage'
+             THEN line_item_usage_amount ELSE 0.0 END
+    )                                   AS ri_hours,
+    SUM(
+        CASE WHEN line_item_line_item_type = 'Usage'
+             THEN line_item_usage_amount ELSE 0.0 END
+    )                                   AS od_hours
+FROM {cfg.database}.{cfg.table}
+WHERE {partition_cond}
+  AND {date_cond}
+  AND line_item_product_code = 'AmazonES'
+  AND line_item_line_item_type IN ('Usage', 'DiscountedUsage')
+  AND product_instance_type LIKE '%.search'
+  {region_filter}
+  {account_filter}
+GROUP BY 1, 2, 3, 4
+ORDER BY usage_hours DESC
+"""
+    return client.run_query(sql)
+
+
+# ---------------------------------------------------------------------------
 # 6. RI カバレッジ詳細（RI 使用時間 vs OD 使用時間）
 # ---------------------------------------------------------------------------
 

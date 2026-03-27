@@ -153,6 +153,14 @@ def fetch_ri_coverage(
     session = boto3.Session(profile_name=payer_profile, region_name="us-east-1")
     ce = session.client("ce")
 
+    group_by = [
+        {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"},
+        {"Type": "DIMENSION", "Key": "REGION"},
+        {"Type": "DIMENSION", "Key": "INSTANCE_TYPE"},
+    ]
+    if svc_cfg.engine_dimension:
+        group_by.append({"Type": "DIMENSION", "Key": svc_cfg.engine_dimension})
+
     try:
         resp = ce.get_reservation_coverage(
             TimePeriod={
@@ -165,12 +173,7 @@ def fetch_ri_coverage(
                     "Values": [svc_cfg.ce_service_name],
                 }
             },
-            GroupBy=[
-                {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"},
-                {"Type": "DIMENSION", "Key": "REGION"},
-                {"Type": "DIMENSION", "Key": "INSTANCE_TYPE"},
-                {"Type": "DIMENSION", "Key": svc_cfg.engine_dimension},
-            ],
+            GroupBy=group_by,
         )
     except ClientError as e:
         code = e.response["Error"]["Code"]
@@ -191,8 +194,11 @@ def fetch_ri_coverage(
             account_id    = attrs.get("linkedAccount", "")
             region        = attrs.get("region", "")
             instance_type = attrs.get("instanceType", "")
-            # cacheEngine は Attributes に含まれないことがある。Keys[3] をフォールバックとして使用
-            platform      = attrs.get(engine_attr) or (keys[3] if len(keys) > 3 else "")
+            # engine_attr がある場合は Attributes から取得、なければ Keys[3] をフォールバック
+            if engine_attr:
+                platform = attrs.get(engine_attr) or (keys[3] if len(keys) > 3 else "")
+            else:
+                platform = ""
             covered   = float(coverage.get("ReservedHours", 0))
             on_demand = float(coverage.get("OnDemandHours", 0))
             total     = float(coverage.get("TotalRunningHours", 0))
@@ -234,6 +240,14 @@ def fetch_ri_coverage_range(
     session = boto3.Session(profile_name=payer_profile, region_name="us-east-1")
     ce = session.client("ce")
 
+    group_by = [
+        {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"},
+        {"Type": "DIMENSION", "Key": "REGION"},
+        {"Type": "DIMENSION", "Key": "INSTANCE_TYPE"},
+    ]
+    if svc_cfg.engine_dimension:
+        group_by.append({"Type": "DIMENSION", "Key": svc_cfg.engine_dimension})
+
     try:
         resp = ce.get_reservation_coverage(
             TimePeriod={"Start": start_date, "End": end_date},
@@ -243,12 +257,7 @@ def fetch_ri_coverage_range(
                     "Values": [svc_cfg.ce_service_name],
                 }
             },
-            GroupBy=[
-                {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"},
-                {"Type": "DIMENSION", "Key": "REGION"},
-                {"Type": "DIMENSION", "Key": "INSTANCE_TYPE"},
-                {"Type": "DIMENSION", "Key": svc_cfg.engine_dimension},
-            ],
+            GroupBy=group_by,
         )
     except ClientError as e:
         code = e.response["Error"]["Code"]
@@ -270,8 +279,10 @@ def fetch_ri_coverage_range(
             on_demand = float(coverage.get("OnDemandHours", 0))
             total     = float(coverage.get("TotalRunningHours", 0))
             pct       = float(coverage.get("CoverageHoursPercentage", 0))
-            # cacheEngine は Attributes に含まれないことがある。Keys[3] をフォールバックとして使用
-            platform = attrs.get(engine_attr) or (keys[3] if len(keys) > 3 else "")
+            if engine_attr:
+                platform = attrs.get(engine_attr) or (keys[3] if len(keys) > 3 else "")
+            else:
+                platform = ""
             records.append(RiCoverageRecord(
                 account_id      = attrs.get("linkedAccount", ""),
                 region          = attrs.get("region", ""),
@@ -309,6 +320,12 @@ def _parse_instance_detail(service: str, instance_details: dict[str, Any]) -> tu
         instance_type = d.get("NodeType", "")
         region        = d.get("Region", "")
         platform      = d.get("ProductDescription", "")
+    elif service == "opensearch":
+        inst_class    = d.get("InstanceClass", "")
+        inst_size     = d.get("InstanceSize", "")
+        instance_type = f"{inst_class}.{inst_size}.search" if inst_class and inst_size else d.get("InstanceType", "")
+        region        = d.get("Region", "")
+        platform      = ""
     else:
         instance_type = d.get("InstanceType", d.get("NodeType", ""))
         region        = d.get("Region", "")

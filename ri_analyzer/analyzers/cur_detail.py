@@ -186,6 +186,40 @@ def parse_elasticache_node_detail(rows: list[dict[str, Any]]) -> list[CurInstanc
     return result
 
 
+def parse_opensearch_domains(rows: list[dict[str, Any]]) -> list[CurInstanceRow]:
+    """running_opensearch_domains() の結果を CurInstanceRow に変換する。"""
+    result = []
+    for r in rows:
+        result.append(CurInstanceRow(
+            account_id=r.get("account_id", ""),
+            region=r.get("region", ""),
+            instance_type=r.get("instance_type", ""),
+            engine="OpenSearch",
+            deployment="",
+            usage_hours=_f(r.get("usage_hours")),
+            unblended_cost=_f(r.get("unblended_cost")),
+        ))
+    return result
+
+
+def parse_opensearch_domain_detail(rows: list[dict[str, Any]]) -> list[CurInstanceDetailRow]:
+    """opensearch_domain_detail() の結果を CurInstanceDetailRow に変換する。"""
+    result = []
+    for r in rows:
+        result.append(CurInstanceDetailRow(
+            resource_id=r.get("resource_id", ""),
+            account_id=r.get("account_id", ""),
+            region=r.get("region", ""),
+            instance_type=r.get("instance_type", ""),
+            engine="OpenSearch",
+            deployment="",
+            usage_hours=_f(r.get("usage_hours")),
+            ri_hours=_f(r.get("ri_hours")),
+            od_hours=_f(r.get("od_hours")),
+        ))
+    return result
+
+
 def parse_cur_coverage(rows: list[dict[str, Any]]) -> list[CurCoverageRow]:
     """ri_coverage_detail() の結果を CurCoverageRow に変換する。"""
     result = []

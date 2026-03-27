@@ -45,21 +45,33 @@ _VALKEY_NORM_FACTOR: dict[str, float] = {
 }
 
 
-def _parse_instance_prefix(instance_type: str) -> str:
-    """'db.r5.large' → 'db', 'cache.r6g.large' → 'cache'"""
+def _is_opensearch(instance_type: str) -> bool:
+    """OpenSearch instance type format: m5.large.search / r6g.2xlarge.search"""
     parts = instance_type.split(".")
+    return len(parts) >= 3 and parts[-1] == "search"
+
+
+def _parse_instance_prefix(instance_type: str) -> str:
+    """'db.r5.large' → 'db', 'cache.r6g.large' → 'cache', 'm5.large.search' → 'search'"""
+    parts = instance_type.split(".")
+    if _is_opensearch(instance_type):
+        return "search"
     return parts[0] if len(parts) >= 3 else "db"
 
 
 def _parse_instance_family(instance_type: str) -> str:
-    """'db.r5.large' → 'r5'"""
+    """'db.r5.large' → 'r5', 'm5.large.search' → 'm5'"""
     parts = instance_type.split(".")
+    if _is_opensearch(instance_type):
+        return parts[0]
     return parts[1] if len(parts) >= 3 else instance_type
 
 
 def _parse_instance_size(instance_type: str) -> str:
-    """'db.r5.large' → 'large'"""
+    """'db.r5.large' → 'large', 'm5.large.search' → 'large'"""
     parts = instance_type.split(".")
+    if _is_opensearch(instance_type):
+        return parts[1] if len(parts) >= 2 else ""
     return parts[2] if len(parts) >= 3 else ""
 
 

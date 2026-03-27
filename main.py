@@ -32,8 +32,8 @@ from ri_analyzer.analyzers import expiration as exp_analyzer
 from ri_analyzer.analyzers import coverage as cov_analyzer
 from ri_analyzer.analyzers import utilization as util_analyzer
 from ri_analyzer.analyzers.cur_detail import (
-    parse_rds_instances, parse_elasticache_nodes,
-    parse_rds_instance_detail, parse_elasticache_node_detail,
+    parse_rds_instances, parse_elasticache_nodes, parse_opensearch_domains,
+    parse_rds_instance_detail, parse_elasticache_node_detail, parse_opensearch_domain_detail,
     parse_cur_coverage, parse_unused_ri,
     factcheck_recommendations,
 )
@@ -242,8 +242,8 @@ def main() -> None:
             sys.exit(1)
         from ri_analyzer.fetchers.athena import AthenaClient
         from ri_analyzer.fetchers.cur_queries import (
-            running_rds_instances, running_elasticache_nodes,
-            rds_instance_detail, elasticache_node_detail,
+            running_rds_instances, running_elasticache_nodes, running_opensearch_domains,
+            rds_instance_detail, elasticache_node_detail, opensearch_domain_detail,
             ri_coverage_detail, unused_ri_cost,
         )
         athena_client = AthenaClient(cfg.athena, payer_profile=cfg.payer.profile if cfg.payer.profile else None)
@@ -282,10 +282,6 @@ def main() -> None:
     print(f"  Payer profile : {payer_profile}")
 
     for svc in services:
-        if svc not in ("rds", "elasticache"):
-            print(f"\n  [{svc.upper()}] not yet implemented (TODO), skipping.")
-            continue
-
         start, end = _ce_time_period(cfg.analysis.lookback_days)
         if not use_json:
             print(f"\n  -- {svc.upper()} --")
@@ -416,7 +412,7 @@ def main() -> None:
         if athena_client is None:
             continue
 
-        _svc_label = {"rds": "AmazonRDS", "elasticache": "AmazonElastiCache"}.get(svc)
+        _svc_label = {"rds": "AmazonRDS", "elasticache": "AmazonElastiCache", "opensearch": "AmazonES"}.get(svc)
         if _svc_label is None:
             continue  # Athena クエリ未対応サービスはスキップ
 
@@ -429,11 +425,15 @@ def main() -> None:
             else:
                 print(f"  Fetching CUR instance detail (Athena, {cur_start} to {cur_end})...", end="", flush=True)
                 try:
-                    raw = (rds_instance_detail if svc == "rds" else elasticache_node_detail)(
-                        athena_client, start_date=cur_start, end_date=cur_end,
-                        regions=cfg.analysis.regions if cfg.analysis.regions else None,
-                    )
-                    detail_rows = (parse_rds_instance_detail if svc == "rds" else parse_elasticache_node_detail)(raw)
+                    if svc == "rds":
+                        raw = rds_instance_detail(athena_client, start_date=cur_start, end_date=cur_end, regions=cfg.analysis.regions or None)
+                        detail_rows = parse_rds_instance_detail(raw)
+                    elif svc == "elasticache":
+                        raw = elasticache_node_detail(athena_client, start_date=cur_start, end_date=cur_end, regions=cfg.analysis.regions or None)
+                        detail_rows = parse_elasticache_node_detail(raw)
+                    else:  # opensearch
+                        raw = opensearch_domain_detail(athena_client, start_date=cur_start, end_date=cur_end, regions=cfg.analysis.regions or None)
+                        detail_rows = parse_opensearch_domain_detail(raw)
                     cache.set(detail_key, detail_rows)
                     print(f" {len(detail_rows)} instance(s)")
                 except Exception as e:
@@ -457,11 +457,15 @@ def main() -> None:
             else:
                 print(f"  Fetching CUR instances (Athena, {cur_start} to {cur_end})...", end="", flush=True)
                 try:
-                    raw = (running_rds_instances if svc == "rds" else running_elasticache_nodes)(
-                        athena_client, start_date=cur_start, end_date=cur_end,
-                        regions=cfg.analysis.regions if cfg.analysis.regions else None,
-                    )
-                    cur_inst_rows = (parse_rds_instances if svc == "rds" else parse_elasticache_nodes)(raw)
+                    if svc == "rds":
+                        raw = running_rds_instances(athena_client, start_date=cur_start, end_date=cur_end, regions=cfg.analysis.regions or None)
+                        cur_inst_rows = parse_rds_instances(raw)
+                    elif svc == "elasticache":
+                        raw = running_elasticache_nodes(athena_client, start_date=cur_start, end_date=cur_end, regions=cfg.analysis.regions or None)
+                        cur_inst_rows = parse_elasticache_nodes(raw)
+                    else:  # opensearch
+                        raw = running_opensearch_domains(athena_client, start_date=cur_start, end_date=cur_end, regions=cfg.analysis.regions or None)
+                        cur_inst_rows = parse_opensearch_domains(raw)
                     cache.set(cur_inst_key, cur_inst_rows)
                     print(f" {len(cur_inst_rows)} row(s)")
                 except Exception as e:
