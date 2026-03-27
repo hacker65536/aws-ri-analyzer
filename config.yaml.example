@@ -9,26 +9,59 @@ analysis:
     - rds
     # - elasticache
     # - opensearch
-    # - redshift
 
   sections:
     - expiration
     - coverage
     - utilization
+    # - recommendations
+    # - cur_instance_detail
 
+  # Filter CUR data by resource region (product_region column in Athena).
+  # This is independent of athena.region (which is the Athena service endpoint).
+  # Remove or leave empty to include all regions.
   regions:
     - ap-northeast-1
     # - us-east-1
 
-  # Cost Explorer lookback period (days)
+  # Cost Explorer lookback period (days).
   # end   = UTC now - 48h (CE data lag)
   # start = end - lookback_days
-  # Note: values below 7 may cause CE to return incomplete results
+  # Note: values below 7 may cause CE to return incomplete results.
   lookback_days: 7
 
-  # RI expiration warning threshold (days)
+  # RI expiration warning threshold (days).
   expiration_warn_days: 90
 
   # Cache TTL in hours for AWS API responses (default: 24).
   # Use --no-cache flag to bypass cache and force fresh data.
   cache_ttl_hours: 24
+
+athena:
+  # Glue database name where CUR is registered.
+  database: athenacurcfn_aws_cost_report
+  # CUR table name.
+  table: awscostreport
+  # Athena workgroup (default: primary).
+  workgroup: primary
+  # S3 output location for query results (s3://bucket/prefix/).
+  output_location: s3://your-athena-result-bucket/prefix/
+  # Result retrieval mode: api (small results) / s3 (large CSV results).
+  result_mode: api
+  # AWS region where Athena is deployed (i.e. the Athena service endpoint).
+  # This is independent of analysis.regions (which filters data by resource region).
+  region: ap-northeast-1
+  # Schema cache TTL in hours (default: 168 = 7 days).
+  schema_cache_ttl_hours: 168
+  # Query result cache TTL in hours (default: 24).
+  query_cache_ttl_hours: 24
+  # AWS profile for Athena queries. If omitted, the payer profile is used.
+  # profile: your-athena-profile
+
+recommendation:
+  # RI term: ONE_YEAR / THREE_YEARS
+  term: ONE_YEAR
+  # Payment option: ALL_UPFRONT / PARTIAL_UPFRONT / NO_UPFRONT
+  payment_option: ALL_UPFRONT
+  # Lookback period for CE recommendation API (days): 7 / 30 / 60
+  lookback_days: 7

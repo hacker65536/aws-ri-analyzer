@@ -98,7 +98,7 @@ class Config:
             analysis=AnalysisConfig(
                 services=analysis_raw.get("services") or None,
                 sections=analysis_raw.get("sections") or None,
-                regions=analysis_raw.get("regions", ["ap-northeast-1"]),
+                regions=analysis_raw.get("regions", []),
                 lookback_days=analysis_raw.get("lookback_days", 7),
                 expiration_warn_days=analysis_raw.get("expiration_warn_days", 90),
                 cache_ttl_hours=float(analysis_raw.get("cache_ttl_hours", 24.0)),

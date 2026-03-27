@@ -107,11 +107,11 @@ def print_cur_instance_detail(
         return
 
     col = (
-        f"\n  {'Resource Name':<36}  {'Account ID':<14}  {'Type':<18}"
+        f"\n  {'Resource Name':<30}  {'Account ID':<14}  {'Region':<16}  {'Type':<18}"
         f"  {'Engine':<16}  {'Period%':>7}  {'hrs':>6}  {'RI%':>5}  {'RI hrs':>7}  {'OD hrs':>7}"
     )
     print(col)
-    print(f"  {'-' * 130}")
+    print(f"  {'-' * 140}")
 
     # engine でグループ化
     engines: list[str] = []
@@ -134,7 +134,7 @@ def print_cur_instance_detail(
             if is_short:
                 short_lived_count += 1
 
-            name = r.resource_name[:36]
+            name = r.resource_name[:30]
             run_pct_str = f"{run_pct:6.1f}%"
             hrs_str     = f"{r.usage_hours:6.0f}"
             ri_pct_str  = f"{r.coverage_pct:4.0f}%"
@@ -142,7 +142,7 @@ def print_cur_instance_detail(
             if is_short:
                 # 短命なインスタンスは行全体を黄色
                 line = (
-                    f"  {name:<36}  {r.account_id:<14}  {r.instance_type:<18}"
+                    f"  {name:<30}  {r.account_id:<14}  {r.region:<16}  {r.instance_type:<18}"
                     f"  {r.engine:<16}  {run_pct_str}  {hrs_str}  {ri_pct_str}"
                     f"  {r.ri_hours:>7.1f}  {r.od_hours:>7.1f}"
                 )
@@ -151,7 +151,7 @@ def print_cur_instance_detail(
                 ri_pct_color = _GREEN if r.coverage_pct >= 90 else (_YELLOW if r.coverage_pct >= 50 else _RED)
                 ri_pct_colored = _c(ri_pct_str, ri_pct_color)
                 print(
-                    f"  {name:<36}  {r.account_id:<14}  {r.instance_type:<18}"
+                    f"  {name:<30}  {r.account_id:<14}  {r.region:<16}  {r.instance_type:<18}"
                     f"  {r.engine:<16}  {run_pct_str}  {hrs_str}  {ri_pct_colored}"
                     f"  {r.ri_hours:>7.1f}  {r.od_hours:>7.1f}"
                 )

@@ -127,8 +127,11 @@ analysis:
     - utilization
     - recommendations          # CE GetReservationPurchaseRecommendation
 
-  regions:
-    - ap-northeast-1
+  # CUR データを product_region でフィルタする（Athena クエリの WHERE 句に適用）。
+  # athena.region（Athena エンドポイントのリージョン）とは独立した設定。
+  # 省略または空リストで全リージョン対象（デフォルト）。
+  # regions:
+  #   - ap-northeast-1
 
   # CE の参照期間（日数）
   # end   = UTC 現在 - 48h（CE のデータタイムラグ考慮）
@@ -540,7 +543,7 @@ micro=0.4 / small=0.8 / medium=1.6 / large=3.2 / xlarge=6.4 / 2xlarge=12.8 / ...
 
 - `print_cur_instance_detail(rows, service, start_date, end_date, *, min_hours=None)`
   - **resource_id 単位**でインスタンス稼働実績を表示（RI 購入精査の基本機能）
-  - 列: Resource Name / Account ID / Type / Engine / Period% / hrs / RI% / RI hrs / OD hrs
+  - 列: Resource Name / Account ID / Region / Type / Engine / Period% / hrs / RI% / RI hrs / OD hrs
   - `Period%` = `usage_hours / period_hours × 100`（クエリ期間中の稼働率）
   - 短命インスタンス（`usage_hours < period_hours × 0.5`）を黄色ハイライト
   - `min_hours` 指定時はそれ未満の行を非表示にして RI 候補に絞り込む

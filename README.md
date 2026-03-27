@@ -210,6 +210,8 @@ account_id     region          instance_type     total_CUR  total_CE   Δtotal  
 | 列 | 内容 |
 |---|---|
 | `Resource Name` | ARN 末尾の DB 識別子（短縮表示）|
+| `Account ID` | AWS アカウント ID |
+| `Region` | リソースのリージョン（`product_region`）|
 | `Period%` | クエリ期間中の稼働率（100% = 期間ずっと稼働）|
 | `hrs` | usage_hours（実績使用時間）|
 | `RI%` | RI カバレッジ率（RI hrs / 合計 hrs）|
