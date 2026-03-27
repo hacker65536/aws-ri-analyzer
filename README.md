@@ -87,15 +87,27 @@ uv run ri-analyzer --no-color > output.log
 CUR（Cost and Usage Report）を Athena 経由でクエリする機能。
 `config.yaml` の `athena` セクション設定が前提（S3 + Athena / Glue のセットアップが必要）。
 
+CUR クエリのデフォルト期間は **CE API と同じ期間**（UTC now − 48h を end とした lookback_days 分）。
+`--cur-year` / `--cur-month` を指定するとその月全体（月初〜翌月初）に切り替わる。
+
 ```bash
-# CUR セクションを追加（先月が自動適用）
+# RI 購入精査: resource_id 単位でインスタンス稼働実績を表示（CE と同期間、デフォルト）
+uv run ri-analyzer --service rds --section cur_instance_detail
+
+# 稼働率が低い（期間の 50% 未満）インスタンスを除外して RI 候補に絞り込む
+uv run ri-analyzer --service rds --section cur_instance_detail --min-hours 100
+
+# 先月全体を指定して確認
+uv run ri-analyzer --service rds --section cur_instance_detail --cur-year 2026 --cur-month 2
+
+# CUR セクションを一括追加（cur_instance_detail / cur_instances / cur_coverage / unused_ri）
 uv run ri-analyzer --service rds --athena
 
 # 年月を明示指定
 uv run ri-analyzer --service rds --athena --cur-year 2026 --cur-month 3
 
 # CUR セクションだけ表示
-uv run ri-analyzer --service rds --section cur_instances cur_coverage unused_ri
+uv run ri-analyzer --service rds --section cur_instance_detail cur_instances cur_coverage unused_ri
 
 # CE Recommendation + CUR ファクトチェック
 uv run ri-analyzer --service rds --section recommendations --athena
@@ -171,9 +183,10 @@ account_id     region          instance_type     total_CUR  total_CE   Δtotal  
 | `--no-color` | カラー出力を無効化 |
 | `--no-cache` | キャッシュを無視して AWS から再取得 |
 | `--config PATH` | 設定ファイルのパス（デフォルト: config.yaml） |
+| `--min-hours HRS` | `cur_instance_detail`: usage_hours >= HRS のインスタンスのみ表示 |
 | `--athena` | Athena/CUR セクションを有効化 |
-| `--cur-year YYYY` | CUR クエリ年（省略時: 先月）|
-| `--cur-month M` | CUR クエリ月 1〜12（省略時: 先月）|
+| `--cur-year YYYY` | CUR クエリ年（省略時: CE API と同じ期間）|
+| `--cur-month M` | CUR クエリ月 1〜12（省略時: CE API と同じ期間）|
 
 #### セクション一覧
 
@@ -183,12 +196,26 @@ account_id     region          instance_type     total_CUR  total_CE   Δtotal  
 | `coverage` | CE API | RI カバレッジ率 |
 | `utilization` | CE API | RI 利用率・未使用時間 |
 | `recommendations` | CE API | RI 購入推奨 |
-| `cur_instances` | Athena/CUR | 稼働中インスタンス一覧（実績使用時間・コスト）|
+| `cur_instance_detail` | Athena/CUR | **resource_id 単位**の稼働実績・RI/OD 内訳（RI 購入精査の基本機能）|
+| `cur_instances` | Athena/CUR | instance_type 集計の稼働一覧（実績使用時間・コスト）|
 | `cur_coverage` | Athena/CUR | CUR ベースの RI カバレッジ詳細 |
 | `unused_ri` | Athena/CUR | 未使用 RI 費用（RIFee 行）|
 
-`--athena` フラグは `cur_instances` / `cur_coverage` / `unused_ri` を一括追加し、
+`--athena` フラグは `cur_instance_detail` / `cur_instances` / `cur_coverage` / `unused_ri` を一括追加し、
 `recommendations` と組み合わせると CE Recommendation のファクトチェックも自動表示する。
+
+##### `cur_instance_detail` の見方
+
+| 列 | 内容 |
+|---|---|
+| `Resource Name` | ARN 末尾の DB 識別子（短縮表示）|
+| `Period%` | クエリ期間中の稼働率（100% = 期間ずっと稼働）|
+| `hrs` | usage_hours（実績使用時間）|
+| `RI%` | RI カバレッジ率（RI hrs / 合計 hrs）|
+| `RI hrs` / `OD hrs` | RI 適用時間 / オンデマンド時間 |
+
+- **黄色ハイライト**: 期間の 50% 未満しか稼働していない「短命なインスタンス」。RI 購入候補から除外を検討する
+- `--min-hours` で閾値を指定すると、それ以上稼働したインスタンスのみ表示できる
 
 ### キャッシュ
 
