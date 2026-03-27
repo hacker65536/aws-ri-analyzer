@@ -15,6 +15,51 @@ from ri_analyzer.reporter._base import _RED, _YELLOW, _GREEN, _CYAN, _BOLD, _c, 
 
 
 # ──────────────────────────────────────────────
+# Display helpers
+# ──────────────────────────────────────────────
+
+def _abbrev_platform(platform: str) -> str:
+    """Platform 表示名を短縮する。
+
+    - Aurora 系は暗黙的に Single-AZ のため " Single-AZ" を省略
+    - " Multi-AZ" → " M-AZ"
+    """
+    result = platform
+    if result.lower().startswith("aurora"):
+        result = result.replace(" Single-AZ", "").replace(" single-az", "")
+    else:
+        result = result.replace(" Single-AZ", " S-AZ").replace(" single-az", " S-AZ")
+    result = result.replace("Multi-AZ", "M-AZ").replace("multi-az", "M-AZ")
+    return result
+
+
+_REGION_SHORT: dict[str, str] = {
+    "Asia Pacific (Tokyo)":       "ap-northeast-1",
+    "Asia Pacific (Osaka)":       "ap-northeast-3",
+    "Asia Pacific (Seoul)":       "ap-northeast-2",
+    "Asia Pacific (Singapore)":   "ap-southeast-1",
+    "Asia Pacific (Sydney)":      "ap-southeast-2",
+    "Asia Pacific (Mumbai)":      "ap-south-1",
+    "US East (N. Virginia)":      "us-east-1",
+    "US East (Ohio)":             "us-east-2",
+    "US West (Oregon)":           "us-west-2",
+    "US West (N. California)":    "us-west-1",
+    "Europe (Ireland)":           "eu-west-1",
+    "Europe (London)":            "eu-west-2",
+    "Europe (Frankfurt)":         "eu-central-1",
+    "Europe (Paris)":             "eu-west-3",
+    "Europe (Stockholm)":         "eu-north-1",
+    "Canada (Central)":           "ca-central-1",
+    "South America (Sao Paulo)":  "sa-east-1",
+}
+
+
+def _abbrev_region(region: str) -> str:
+    """AWS リージョン表示名をリージョンコードに変換する。"""
+    return _REGION_SHORT.get(region, region)
+
+
+# ──────────────────────────────────────────────
 # Expiration
 # ──────────────────────────────────────────────
 
@@ -330,7 +375,7 @@ def print_recommendations(
         return
 
     col_header = (
-        f"\n  {'Instance Type':<22}  {'Platform':<16}  {'Region':<16}"
+        f"\n  {'Instance Type':<22}  {'Platform':<18}  {'Region':<14}"
         f"  {'Cnt':>3}  {'NUs':>6}  {'Upfront ($)':>11}  {'Savings/mo':>11}"
         f"  {'Savings%':>8}  {'Breakeven':>9}"
     )
@@ -358,7 +403,7 @@ def print_recommendations(
         for d in sorted_details:
             savings_str = _c(f"${d.estimated_monthly_savings:>10.2f}", _GREEN)
             print(
-                f"  {d.instance_type:<22}  {d.platform:<16}  {d.region:<16}"
+                f"  {d.instance_type:<22}  {_abbrev_platform(d.platform):<18}  {_abbrev_region(d.region):<14}"
                 f"  {d.count:>3}  {d.normalized_units:>6.1f}  ${d.upfront_cost:>10.2f}"
                 f"  {savings_str}  {d.estimated_savings_pct:>7.1f}%  {d.breakeven_months:>7.1f} mo"
             )
