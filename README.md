@@ -187,43 +187,43 @@ SQL テンプレートとカスタム SQL の両方に対応している。
 
 ```bash
 # テンプレート一覧（Tab 補完も対応）
-cur-analyzer --list
+uv run cur-analyzer --list
 
 # テンプレートを実行
 # year / month / start_date / end_date は CE 期間（lookback_days）から自動注入（-p で上書き可）
-cur-analyzer rds_instances -p year=2026 -p month=3
-cur-analyzer rds_resource_ids \
+uv run cur-analyzer rds_instances -p year=2026 -p month=3
+uv run cur-analyzer rds_resource_ids \
   -p instance_type_prefix=db.r8g -p engine="Aurora MySQL"
-cur-analyzer ce_factcheck_rds -p year=2026 -p month=3 \
+uv run cur-analyzer ce_factcheck_rds -p year=2026 -p month=3 \
   -p instance_type=db.r6g.large -p region=ap-northeast-1 -p engine=Aurora
 
 # カスタム SQL ファイルを実行（{{ variable }} 形式で変数埋め込み可）
-cur-analyzer ./queries/my_query.sql -p year=2026 -p month=3
+uv run cur-analyzer ./queries/my_query.sql -p year=2026 -p month=3
 
 # リソース別の稼働時間・エンジン確認（queries/ 配下のカスタム SQL）
-cur-analyzer queries/resource_uptime.sql -p resource_id=my-instance-00
-cur-analyzer queries/resource_engine_check.sql -p resource_id=my-instance-00
+uv run cur-analyzer queries/resource_uptime.sql -p resource_id=my-instance-00
+uv run cur-analyzer queries/resource_engine_check.sql -p resource_id=my-instance-00
 
 # インスタンスタイプ変更調査（サービス・使用タイプ・エンジン列の指定が必要）
-cur-analyzer queries/resource_type_changes.sql \
+uv run cur-analyzer queries/resource_type_changes.sql \
   -p product_code=AmazonRDS \
   -p usage_type_pattern=%InstanceUsage% \
   -p engine_col=product_database_engine
-cur-analyzer queries/resource_latest_type.sql \
+uv run cur-analyzer queries/resource_latest_type.sql \
   -p product_code=AmazonRDS \
   -p usage_type_pattern=%InstanceUsage% \
   -p engine_col=product_database_engine
 
 # 出力フォーマット指定（パイプや他ツールへの連携に便利）
-cur-analyzer rds_instances -p year=2026 -p month=3 --format csv > out.csv
-cur-analyzer rds_instances -p year=2026 -p month=3 --format json
+uv run cur-analyzer rds_instances -p year=2026 -p month=3 --format csv > out.csv
+uv run cur-analyzer rds_instances -p year=2026 -p month=3 --format json
 
 # サイズ閾値・表示行数の調整
-cur-analyzer rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 20
+uv run cur-analyzer rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 20
 
 # キャッシュ制御
-cur-analyzer rds_instances --refresh   # キャッシュ削除して再実行
-cur-analyzer rds_instances --no-cache  # キャッシュを使わず毎回実行
+uv run cur-analyzer rds_instances --refresh   # キャッシュ削除して再実行
+uv run cur-analyzer rds_instances --no-cache  # キャッシュを使わず毎回実行
 ```
 
 > **注意**: CUR のパーティション `month` はゼロ埋めなし（`'3'` / `'12'`）。
@@ -276,13 +276,13 @@ WHERE year  = '{{ year }}'
 
 ```bash
 # queries/ 直下に置いたカスタムクエリ（--list にも表示される）
-cur-analyzer queries/my_query.sql -p resource_id=my-db-instance
+uv run cur-analyzer queries/my_query.sql -p resource_id=my-db-instance
 
 # 任意の場所の SQL ファイル
-cur-analyzer /tmp/check.sql -p year=2026 -p month=3
+uv run cur-analyzer /tmp/check.sql -p year=2026 -p month=3
 
 # 自動注入変数を上書きして別テーブルを参照する
-cur-analyzer queries/my_query.sql -p database=other_db -p table=other_table
+uv run cur-analyzer queries/my_query.sql -p database=other_db -p table=other_table
 ```
 
 ### CUR vs CE カバレッジ検証（`compare_cur_ce.py`）
