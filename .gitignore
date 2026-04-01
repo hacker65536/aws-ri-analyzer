@@ -3,6 +3,7 @@ config.yaml
 
 # Dev notes
 HANDOFF.md
+CLAUDE.md
 
 # Python
 __pycache__/
