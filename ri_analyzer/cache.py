@@ -55,6 +55,24 @@ class CacheStore:
         with path.open("wb") as f:
             pickle.dump(entry, f)
 
+    def purge_expired(self) -> int:
+        """TTL 切れの pkl ファイルを削除する。削除件数を返す。"""
+        if not self.cache_dir.exists():
+            return 0
+        removed = 0
+        for path in self.cache_dir.glob("*.pkl"):
+            try:
+                with path.open("rb") as f:
+                    entry = pickle.load(f)
+                age = (datetime.now(timezone.utc) - entry["created_at"]).total_seconds()
+                if age > self.ttl_seconds:
+                    path.unlink()
+                    removed += 1
+            except Exception:
+                path.unlink()  # 壊れたファイルも削除
+                removed += 1
+        return removed
+
     def created_at(self, key: str) -> str | None:
         """キャッシュの作成日時をローカルタイム文字列で返す（表示用）。"""
         path = self._key_path(key)

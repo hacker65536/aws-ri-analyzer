@@ -250,6 +250,11 @@ def main() -> None:
         athena_client = AthenaClient(cfg.athena, payer_profile=cfg.payer.profile if cfg.payer.profile else None)
 
     cache = CacheStore(ttl_hours=cfg.analysis.cache_ttl_hours)
+    cache.purge_expired()
+    if cfg.athena is not None:
+        from ri_analyzer.fetchers.athena import purge_expired_query_cache
+        purge_expired_query_cache(cfg.athena.query_cache_ttl_hours, cfg.athena.schema_cache_ttl_hours)
+
     use_json = args.output == "json"
     json_results: dict = {}  # --output json 時に収集する
 

@@ -590,29 +590,70 @@ AND cur.engine.lower() in rec.platform.lower()
 
 ---
 
-## キャッシュ（`cache.py`）
+## キャッシュ
 
-AWS API レスポンスをローカルディスクにキャッシュし、繰り返し実行を高速化する。
+繰り返し実行を高速化するため、**2 層のキャッシュ**を持つ。
+
+### 1. 汎用 API キャッシュ（`cache.py`）
+
+AWS Cost Explorer API のレスポンスをローカルディスクに保存する。
 
 | 項目 | 内容 |
 |---|---|
 | 保存先 | `~/.cache/ri-analyzer/*.pkl` |
 | フォーマット | pickle（`datetime` 型を含むデータクラスをそのまま保存） |
-| デフォルト TTL | 24 時間（`config.yaml` の `cache_ttl_hours` で変更可） |
+| デフォルト TTL | 24 時間（`config.yaml` の `analysis.cache_ttl_hours` で変更可） |
 | バイパス | `--no-cache` フラグ |
-| キャッシュキー | `{type}:{payer_profile}:{service}:{lookback_days}` の SHA-256（先頭 16 文字）|
+| キャッシュキー | `SHA-256("{_CACHE_VERSION}:{キー文字列}")` の先頭 16 文字 |
 | スキーマ変更対応 | `_CACHE_VERSION` 定数をインクリメントすると既存キャッシュが自動無効化される |
 
 キャッシュされるデータ：
-- `subscriptions:{...}` → `(list[RiSubscription], list[RiUtilizationRecord])`
-- `coverage:{...}` → `list[RiCoverageRecord]`
-- `recommendations:{profile}:{svc}:{term}:{payment_option}:{lookback_days}` → `list[RiRecommendationGroup]`
+- `subscriptions:{profile}:{svc}:{lookback_days}:{end_date}` → `(list[RiSubscription], list[RiUtilizationRecord])`
+- `coverage:{profile}:{svc}:{lookback_days}:{end_date}` → `list[RiCoverageRecord]`
+- `recommendations:{profile}:{svc}:{term}:{payment_option}:{lookback_days}:{end_date}` → `list[RiRecommendationGroup]`
 - `athena:instance_detail:{svc}:{start_date}:{end_date}` → `list[CurInstanceDetailRow]`
 - `athena:instances:{svc}:{start_date}:{end_date}` → `list[CurInstanceRow]`
 - `athena:coverage:{svc}:{start_date}:{end_date}` → `list[CurCoverageRow]`
 - `athena:unused_ri:{svc}:{start_date}:{end_date}` → `list[UnusedRiRow]`
 
-Athena スキーマキャッシュ（`~/.cache/ri-analyzer/athena_schema_{db}_{table}.json`）は TTL 168 時間（1 週間）で独立管理。
+### 2. Athena クエリキャッシュ（`fetchers/athena.py`）
+
+Athena の実行コストを抑えるため、SQL クエリ結果をローカルに保存して再利用する。
+
+#### クエリ結果キャッシュ
+
+| 項目 | 内容 |
+|---|---|
+| 保存先 | `~/.cache/ri-analyzer/query_results/` |
+| フォーマット | `{sql_hash}.csv`（結果）＋ `{sql_hash}.meta.json`（メタデータ） |
+| キャッシュキー | `SHA-256(SQLテキスト)` の先頭 16 文字 |
+| デフォルト TTL | 24 時間（`config.yaml` の `athena.query_cache_ttl_hours` で変更可） |
+| TTL 判定 | `meta.json` のファイル更新日時で判定 |
+| バイパス | `--no-cache` フラグ（`use_cache=False` で Athena を直接実行） |
+
+`meta.json` に保存される情報：
+
+```json
+{
+  "query_id": "uuid",
+  "s3_path": "s3://...",
+  "size_bytes": 1024,
+  "elapsed_sec": 2.5,
+  "sql_hash": "abcd1234...",
+  "cached_at": "2026-04-01T00:00:00"
+}
+```
+
+キャッシュヒット時は `QueryResult.from_cache = True` となり、`athena_run.py` の出力に `[CACHE HIT]` が表示される。  
+サイズ超過でダウンロードをスキップした結果（`rows=None`）はキャッシュ対象外。
+
+#### スキーマキャッシュ
+
+| 項目 | 内容 |
+|---|---|
+| 保存先 | `~/.cache/ri-analyzer/athena_schema_{db}_{table}.json` |
+| デフォルト TTL | 168 時間（1 週間）（`config.yaml` の `athena.schema_cache_ttl_hours` で変更可） |
+| 用途 | CUR テーブルのカラム名 → データ型マップを保持し、スキーマ取得クエリを省略する |
 
 ---
 

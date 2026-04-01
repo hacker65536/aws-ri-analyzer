@@ -472,6 +472,36 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def purge_expired_query_cache(
+    query_cache_ttl_hours: float,
+    schema_cache_ttl_hours: float,
+) -> int:
+    """TTL 切れの Athena クエリキャッシュ・スキーマキャッシュを削除する。削除件数を返す。"""
+    removed = 0
+    now = time.time()
+
+    # クエリ結果キャッシュ（*.meta.json と対応する *.csv）
+    query_cache_dir = _CACHE_DIR / "query_results"
+    if query_cache_dir.exists():
+        for meta_path in query_cache_dir.glob("*.meta.json"):
+            age_hours = (now - meta_path.stat().st_mtime) / 3600
+            if age_hours >= query_cache_ttl_hours:
+                csv_path = meta_path.with_suffix("").with_suffix(".csv")
+                meta_path.unlink(missing_ok=True)
+                csv_path.unlink(missing_ok=True)
+                removed += 1
+
+    # スキーマキャッシュ（athena_schema_*.json）
+    if _CACHE_DIR.exists():
+        for schema_path in _CACHE_DIR.glob("athena_schema_*.json"):
+            age_hours = (now - schema_path.stat().st_mtime) / 3600
+            if age_hours >= schema_cache_ttl_hours:
+                schema_path.unlink(missing_ok=True)
+                removed += 1
+
+    return removed
+
+
 def _assert_partition(sql: str) -> None:
     """year / month パーティション条件が WHERE 句に含まれているかチェックする。
 
