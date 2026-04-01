@@ -421,7 +421,7 @@ def main() -> None:
         if athena_client is None:
             continue
 
-        _svc_label = {"rds": "AmazonRDS", "elasticache": "AmazonElastiCache", "opensearch": "AmazonES"}.get(svc)
+        _svc_label = get_service(svc).cur_product_code or None
         if _svc_label is None:
             continue  # Athena クエリ未対応サービスはスキップ
 

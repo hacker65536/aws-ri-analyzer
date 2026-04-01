@@ -1,8 +1,17 @@
-# AWS RI Analyzer
+# AWS RI Analyzer / CUR Analyzer
 
-AWS Organizations 配下の全アカウントの Reserved Instance 状況を分析する CLI ツール。
+コスト最適化を目的とした 2 つの CLI ツール。
 
-Payer アカウントの Cost Explorer API を使うため、個別アカウントへの AssumeRole は不要。
+| コマンド | 主な役割 |
+|---|---|
+| `ri-analyzer` | Reserved Instance のライフサイクル管理（有効期限・カバレッジ・利用率・推奨購入量） |
+| `cur-analyzer` | CUR（Cost and Usage Report）を Athena 経由でアドホック分析 |
+
+両ツールは Payer アカウントの API を使用するため、個別アカウントへの AssumeRole は不要。
+また、内部で同じ Athena クライアントとクエリライブラリを共有しています。
+
+> **将来の方向性**: CUR を使ったコスト最適化分析は RI 以外の領域（Savings Plans、EC2 サイズ最適化など）へも拡張予定です。
+> 現時点では 1 リポジトリ内で共存していますが、`cur-analyzer` の機能が成熟した段階で独立したツールとして分離することを想定しています。
 
 ## セットアップ
 
@@ -37,13 +46,17 @@ source ~/.zshrc
 
 ### シェル補完（zsh / bash）
 
-`~/.zshrc`（bash の場合は `~/.bashrc`）に以下を追加することで、オプションの Tab 補完が有効になります。
+`~/.zshrc`（bash の場合は `~/.bashrc`）に以下を追加することで、両コマンドの Tab 補完が有効になります。
 
 ```bash
 eval "$(/path/to/aws-ri-analyzer/.venv/bin/register-python-argcomplete ri-analyzer)"
+eval "$(/path/to/aws-ri-analyzer/.venv/bin/register-python-argcomplete cur-analyzer)"
 ```
 
-補完対象：`--service`、`--section`、`--output` などの `choices` を持つオプション。
+| コマンド | 補完対象 |
+|---|---|
+| `ri-analyzer` | `--service`、`--section`、`--output` などの choices を持つオプション |
+| `cur-analyzer` | テンプレート名（`rds_instances` など）、各種オプション |
 
 <details>
 <summary>pip を使う場合</summary>
@@ -114,41 +127,46 @@ uv run ri-analyzer --service rds --section cur_instance_detail cur_instances cur
 uv run ri-analyzer --service rds --section recommendations --athena
 ```
 
-#### SQL テンプレートの直接実行（`athena_run.py`）
+## cur-analyzer — CUR アドホック分析
+
+CUR（Cost and Usage Report）を Athena 経由で直接クエリするツール。
+SQL テンプレートとカスタム SQL の両方に対応しています。
 
 ```bash
-# テンプレート一覧
-uv run python athena_run.py --list
+# テンプレート一覧（Tab 補完も対応）
+cur-analyzer --list
 
 # テンプレートを実行
 # year / month / start_date / end_date は CE 期間（lookback_days）から自動注入（-p で上書き可）
-uv run python athena_run.py rds_instances -p year=2026 -p month=3
-uv run python athena_run.py rds_resource_ids \
+cur-analyzer rds_instances -p year=2026 -p month=3
+cur-analyzer rds_resource_ids \
   -p instance_type_prefix=db.r8g -p engine="Aurora MySQL"
-uv run python athena_run.py ce_factcheck_rds -p year=2026 -p month=3 \
+cur-analyzer ce_factcheck_rds -p year=2026 -p month=3 \
   -p instance_type=db.r6g.large -p region=ap-northeast-1 -p engine=Aurora
 
 # カスタム SQL ファイルを実行（{{ variable }} 形式で変数埋め込み可）
-uv run python athena_run.py ./queries/my_query.sql -p year=2026 -p month=3
+cur-analyzer ./queries/my_query.sql -p year=2026 -p month=3
 
 # リソース別の稼働時間・インスタンスタイプ変更調査（queries/ 配下のカスタム SQL）
-uv run python athena_run.py queries/resource_uptime.sql \
-  -p resource_id=my-instance-00
-uv run python athena_run.py queries/resource_engine_check.sql \
-  -p resource_id=my-instance-00
-uv run python athena_run.py queries/resource_type_changes.sql
-uv run python athena_run.py queries/resource_latest_type.sql
+cur-analyzer queries/resource_uptime.sql -p resource_id=my-instance-00
+cur-analyzer queries/resource_engine_check.sql -p resource_id=my-instance-00
+cur-analyzer queries/resource_type_changes.sql
+cur-analyzer queries/resource_latest_type.sql
+
+# 出力フォーマット指定（パイプや他ツールへの連携に便利）
+cur-analyzer rds_instances -p year=2026 -p month=3 --format csv > out.csv
+cur-analyzer rds_instances -p year=2026 -p month=3 --format json
 
 # サイズ閾値・表示行数の調整
-uv run python athena_run.py rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 20
+cur-analyzer rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 20
 
 # キャッシュ制御
-uv run python athena_run.py rds_instances --refresh   # キャッシュ削除して再実行
-uv run python athena_run.py rds_instances --no-cache  # キャッシュを使わず毎回実行
+cur-analyzer rds_instances --refresh   # キャッシュ削除して再実行
+cur-analyzer rds_instances --no-cache  # キャッシュを使わず毎回実行
 ```
 
 > **注意**: CUR のパーティション `month` はゼロ埋めなし（`'3'` / `'12'`）。
-> `athena_run.py` は `-p month=03` と渡されても自動的に `'3'` に正規化する。
+> `-p month=03` と渡されても自動的に `'3'` に正規化する。
 
 #### CUR vs CE カバレッジ検証（`compare_cur_ce.py`）
 

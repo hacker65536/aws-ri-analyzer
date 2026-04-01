@@ -1,23 +1,27 @@
 #!/usr/bin/env python
-"""SQL テンプレート / カスタム SQL を Athena で実行する CLI
+# PYTHON_ARGCOMPLETE_OK
+"""CUR (Cost and Usage Report) を Athena 経由で分析する CLI
 
 使い方:
     # 組み込みテンプレートを実行
-    python athena_run.py rds_instances -p year=2026 -p month=3
+    cur-analyzer rds_instances -p year=2026 -p month=3
 
     # カスタム SQL ファイルを実行（変数あり）
-    python athena_run.py ./my_query.sql -p year=2026 -p month=3
+    cur-analyzer ./my_query.sql -p year=2026 -p month=3
 
     # テンプレート一覧を表示
-    python athena_run.py --list
+    cur-analyzer --list
 
     # オプション指定
-    python athena_run.py rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 20
+    cur-analyzer rds_instances -p year=2026 -p month=3 --limit-mb 50 --head 20
 """
 
 from __future__ import annotations
 
 import argparse
+import argcomplete
+import csv
+import json
 import logging
 import re
 import sys
@@ -27,11 +31,20 @@ from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+def _template_completer(prefix, **kwargs):
+    """Tab 補完: テンプレート名の候補を返す。"""
+    names = [p.stem for p in sorted(_TEMPLATE_DIR.glob("*.sql"))]
+    return [n for n in names if n.startswith(prefix)]
+
 from ri_analyzer.config import Config
 from ri_analyzer.fetchers.athena import AthenaClient, PartitionMissingError
+from ri_analyzer.service_registry import SERVICES
 
 # 組み込みテンプレートのディレクトリ
 _TEMPLATE_DIR = Path(__file__).parent / "queries" / "templates"
+# カスタムクエリのディレクトリ（templates/ の直接の親）
+_QUERIES_DIR = Path(__file__).parent / "queries"
 
 # デフォルト設定
 _DEFAULT_HEAD = 100
@@ -75,18 +88,27 @@ def ce_period_dates(lookback_days: int) -> Tuple[str, str]:
     return str(start_date), str(end_date)
 
 
-def list_templates() -> list[tuple[str, str]]:
-    """(テンプレート名, 説明1行目) のリストを返す。"""
+def _extract_desc(path: Path) -> str:
+    """SQL ファイルの先頭コメントから1行説明を抽出する。"""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("-- テンプレート:"):
+            return line[len("-- テンプレート:"):].strip()
+        # テンプレートキーワードがなければ最初の -- コメントを使う
+        if line.startswith("--") and not line.startswith("---"):
+            desc = line[2:].strip()
+            if desc:
+                return desc
+    return ""
+
+
+def list_templates() -> list[tuple[str, str, str]]:
+    """(種別, テンプレート名/パス, 説明1行目) のリストを返す。"""
     result = []
     for path in sorted(_TEMPLATE_DIR.glob("*.sql")):
-        name = path.stem
-        desc = ""
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line.startswith("-- テンプレート:"):
-                desc = line[len("-- テンプレート:"):].strip()
-                break
-        result.append((name, desc))
+        result.append(("template", path.stem, _extract_desc(path)))
+    for path in sorted(_QUERIES_DIR.glob("*.sql")):
+        result.append(("custom", str(path.relative_to(_QUERIES_DIR.parent)), _extract_desc(path)))
     return result
 
 
@@ -127,7 +149,7 @@ def render_template(sql: str, params: dict[str, str]) -> str:
 
     if errors:
         raise ValueError(
-            f"テンプレート変数が未指定です: {errors}\n"
+            f"テンプレート変数が未指定です: {list(dict.fromkeys(errors))}\n"
             f"-p KEY=VALUE で渡してください。例: -p year=2026 -p month=3"
         )
     return rendered
@@ -177,6 +199,18 @@ def print_table(rows: list[dict]) -> None:
         print("  ".join(_clip(str(row.get(h, "")), widths[h]).ljust(widths[h]) for h in headers))
 
 
+def print_csv(rows: list[dict]) -> None:
+    if not rows:
+        return
+    writer = csv.DictWriter(sys.stdout, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows(rows)
+
+
+def print_json(rows: list[dict]) -> None:
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
+
+
 def _clip(val: str, maxlen: int) -> str:
     return val if len(val) <= maxlen else val[: maxlen - 1] + "…"
 
@@ -198,21 +232,24 @@ def info(msg: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Athena で SQL テンプレートまたはカスタム SQL を実行する",
+        description="CUR (Cost and Usage Report) を Athena 経由で分析する",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 例:
-  python athena_run.py --list
-  python athena_run.py rds_instances -p year=2026 -p month=3
-  python athena_run.py ce_factcheck_rds -p year=2026 -p month=3 -p instance_type=db.r6g.large -p region=ap-northeast-1 -p engine=Aurora
-  python athena_run.py ./my_query.sql -p year=2026 -p month=3
+  cur-analyzer --list
+  cur-analyzer rds_instances -p year=2026 -p month=3
+  cur-analyzer ce_factcheck_rds -p year=2026 -p month=3 -p instance_type=db.r6g.large -p region=ap-northeast-1 -p engine=Aurora
+  cur-analyzer ./my_query.sql -p year=2026 -p month=3
+  cur-analyzer rds_instances -p year=2026 -p month=3 --format csv > out.csv
+  cur-analyzer rds_instances -p year=2026 -p month=3 --format json
         """,
     )
-    parser.add_argument(
+    target_arg = parser.add_argument(
         "target",
         nargs="?",
         help="テンプレート名 or .sql ファイルパス",
     )
+    target_arg.completer = _template_completer
     parser.add_argument(
         "-p", "--param",
         action="append",
@@ -268,10 +305,17 @@ def main() -> None:
         help="config.yaml のパス",
     )
     parser.add_argument(
+        "--format",
+        choices=["table", "csv", "json"],
+        default="table",
+        help="出力フォーマット（デフォルト: table）",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="デバッグログを stderr に表示する",
     )
+    argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -282,16 +326,26 @@ def main() -> None:
 
     # --list
     if args.list:
-        templates = list_templates()
-        if not templates:
+        entries = list_templates()
+        if not entries:
             info("テンプレートがありません。")
             return
-        name_width = max(len(n) for n, _ in templates)
-        info(f"\n{'テンプレート名':<{name_width}}  説明")
-        info("-" * (name_width + 40))
-        for name, desc in templates:
-            info(f"{name:<{name_width}}  {desc}")
-        info(f"\nテンプレートファイル: {_TEMPLATE_DIR}/\n")
+        templates = [(n, d) for kind, n, d in entries if kind == "template"]
+        customs   = [(n, d) for kind, n, d in entries if kind == "custom"]
+        name_width = max((len(n) for n, _ in templates + customs), default=20)
+        if templates:
+            info(f"\n[テンプレート]  cur-analyzer <名前> -p year=YYYY -p month=M")
+            info(f"{'名前':<{name_width}}  説明")
+            info("-" * (name_width + 40))
+            for name, desc in templates:
+                info(f"{name:<{name_width}}  {desc}")
+        if customs:
+            info(f"\n[カスタムクエリ]  cur-analyzer <パス> -p ...")
+            info(f"{'パス':<{name_width}}  説明")
+            info("-" * (name_width + 40))
+            for name, desc in customs:
+                info(f"{name:<{name_width}}  {desc}")
+        info("")
         return
 
     if not args.target:
@@ -315,6 +369,11 @@ def main() -> None:
 
     try:
         base_params = parse_params(args.param)
+        # service キーをサービスキー（rds 等）から CUR プロダクトコードへ解決
+        if "service" in base_params:
+            svc_key = base_params["service"].lower()
+            if svc_key in SERVICES and SERVICES[svc_key].cur_product_code:
+                base_params["service"] = SERVICES[svc_key].cur_product_code
         # config の database / table を既定値として設定（-p で上書き可能）
         base_params.setdefault("database", cfg.athena.database)
         base_params.setdefault("table", cfg.athena.table)
@@ -371,9 +430,10 @@ def main() -> None:
 
         info(f"[INFO] 実行中      : {year}-{month:02d} ...")
 
+        tmp_path = _write_rendered_sql(sql)
         try:
             result = client.run_from_file(
-                sql_path=_write_rendered_sql(sql),
+                sql_path=tmp_path,
                 enforce_partition=not args.no_partition_check,
                 size_limit_mb=args.limit_mb,
                 download_dir=args.download_dir,
@@ -381,7 +441,10 @@ def main() -> None:
             )
         except PartitionMissingError as e:
             info(f"[ERROR] {e}")
+            tmp_path.unlink(missing_ok=True)
             sys.exit(1)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
         # 結果メタ情報
         cache_label = " [CACHE HIT]" if result.from_cache else ""
@@ -411,7 +474,13 @@ def main() -> None:
 
     info(f"  合計      : {len(all_rows):,} 行\n")
     display_rows = all_rows if args.head == 0 else all_rows[: args.head]
-    print_table(display_rows)
+
+    if args.format == "csv":
+        print_csv(display_rows)
+    elif args.format == "json":
+        print_json(display_rows)
+    else:
+        print_table(display_rows)
 
     if args.head > 0 and len(all_rows) > args.head:
         info(f"\n... {len(all_rows) - args.head} 行省略 (--head {args.head})")

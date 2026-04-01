@@ -16,7 +16,7 @@ import io
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -153,7 +153,7 @@ class AthenaClient:
         enforce_partition: bool = True,
         params: Optional[List[str]] = None,
     ) -> Iterator[Dict[str, Any]]:
-        """結果をイテレータで返す（大量行でもメモリを節約）。"""
+        """結果をイテレータで返す。内部では run_query() と同様に全件取得する。"""
         rows = self.run_query(sql, enforce_partition=enforce_partition, params=params)
         yield from rows
 
@@ -405,11 +405,19 @@ ORDER BY ordinal_position
         if not csv_path.exists() or not meta_path.exists():
             return None
 
-        age_hours = (time.time() - meta_path.stat().st_mtime) / 3600
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        cached_at_str = meta.get("cached_at")
+        if cached_at_str:
+            cached_at = datetime.fromisoformat(cached_at_str)
+            # naive datetime（古いキャッシュ）は UTC として扱う
+            if cached_at.tzinfo is None:
+                cached_at = cached_at.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - cached_at).total_seconds() / 3600
+        else:
+            # cached_at がない古いキャッシュはファイル mtime にフォールバック
+            age_hours = (time.time() - meta_path.stat().st_mtime) / 3600
         if age_hours >= self._cfg.query_cache_ttl_hours:
             return None
-
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         rows = _read_csv(csv_path)
         return QueryResult(
             query_id=meta.get("query_id", ""),
@@ -442,7 +450,7 @@ ORDER BY ordinal_position
             "size_bytes": result.size_bytes,
             "elapsed_sec": result.elapsed_sec,
             "sql_hash": sql_hash,
-            "cached_at": datetime.utcnow().isoformat(),
+            "cached_at": datetime.now(timezone.utc).isoformat(),
         }, ensure_ascii=False), encoding="utf-8")
 
 
@@ -506,10 +514,13 @@ def _assert_partition(sql: str) -> None:
     """year / month パーティション条件が WHERE 句に含まれているかチェックする。
 
     CUR の標準的なパーティションキーは year と month（どちらも string）。
+    `year =` / `month =` の形式で検出するため、列名の部分一致（product_year 等）は
+    false positive にならない。
     """
+    import re
     lower = sql.lower()
-    has_year = "year" in lower
-    has_month = "month" in lower
+    has_year = bool(re.search(r"\byear\s*=", lower))
+    has_month = bool(re.search(r"\bmonth\s*=", lower))
     if not (has_year and has_month):
         missing = []
         if not has_year:
@@ -608,13 +619,13 @@ def partition_filter(year: int | str, month: int | str) -> str:
 
 def current_month_filter() -> str:
     """今月のパーティションフィルタを返す。"""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     return partition_filter(now.year, now.month)
 
 
 def last_month_filter() -> str:
     """先月のパーティションフィルタを返す。"""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if now.month == 1:
         return partition_filter(now.year - 1, 12)
     return partition_filter(now.year, now.month - 1)

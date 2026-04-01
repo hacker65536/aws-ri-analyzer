@@ -22,13 +22,10 @@ from typing import Dict, List, Tuple
 from ri_analyzer.config import Config
 from ri_analyzer.fetchers.athena import AthenaClient
 from ri_analyzer.fetchers.cost_explorer import fetch_ri_coverage_range
-from athena_run import render_template
+from ri_analyzer.service_registry import SERVICES
+from cur_analyzer import render_template
 
 _TEMPLATE_DIR = Path(__file__).parent / "queries" / "templates"
-_SERVICE_MAP = {
-    "rds":         "AmazonRDS",
-    "elasticache": "AmazonElastiCache",
-}
 
 
 def _ce_period(lookback_days: int) -> Tuple[str, str]:
@@ -184,7 +181,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="CUR vs CE カバレッジ比較")
     parser.add_argument("--year",  type=int, required=True)
     parser.add_argument("--month", type=int, required=True)
-    parser.add_argument("--service", default="rds", choices=list(_SERVICE_MAP))
+    parser.add_argument("--service", default="rds", choices=[k for k, v in SERVICES.items() if v.cur_product_code])
     parser.add_argument("--instance-type-prefix", default=None,
                         help="絞り込み (例: db.r8g)")
     parser.add_argument("--engine", default=None,
@@ -200,7 +197,7 @@ def main() -> None:
     # CE と同じ期間を計算
     start_date, end_date = _ce_period(cfg.analysis.lookback_days)
 
-    service_code = _SERVICE_MAP[args.service]
+    service_code = SERVICES[args.service].cur_product_code
     print(f"[INFO] 比較期間   : {start_date} 〜 {end_date}  (lookback={cfg.analysis.lookback_days}d)")
     print(f"[INFO] CUR 月     : {args.year}-{args.month:02d}  (year/month パーティション)")
     print(f"[INFO] サービス   : {service_code}")

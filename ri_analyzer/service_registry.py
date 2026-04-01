@@ -15,6 +15,7 @@ class ServiceConfig:
     engine_dimension: str     # GetReservationCoverage の GroupBy キー
     engine_attr: str          # CE レスポンスの Attributes キー
     instance_detail_key: str  # GetReservationPurchaseRecommendation の InstanceDetails キー
+    cur_product_code: str = ""  # CUR の line_item_product_code 値
     has_nu_flexibility: bool = True  # 正規化ユニットによるファミリー内サイズ柔軟性の有無
 
 
@@ -26,18 +27,21 @@ SERVICES: dict[str, ServiceConfig] = {
         engine_dimension   = "DATABASE_ENGINE",
         engine_attr        = "databaseEngine",
         instance_detail_key= "RDSInstanceDetails",
+        cur_product_code   = "AmazonRDS",
     ),
     "elasticache": ServiceConfig(
         ce_service_name    = "Amazon ElastiCache",
         engine_dimension   = "CACHE_ENGINE",
         engine_attr        = "cacheEngine",
         instance_detail_key= "ElastiCacheInstanceDetails",
+        cur_product_code   = "AmazonElastiCache",
     ),
     "opensearch": ServiceConfig(
         ce_service_name    = "Amazon OpenSearch Service",
         engine_dimension   = "",          # Coverage GroupBy でエンジン次元は未サポート
         engine_attr        = "",
         instance_detail_key= "ESInstanceDetails",
+        cur_product_code   = "AmazonES",  # 旧称 Elasticsearch のプロダクトコードが継続使用される
         has_nu_flexibility = False,       # OpenSearch RI はサイズ間の柔軟性なし
     ),
     "redshift": ServiceConfig(
@@ -45,12 +49,14 @@ SERVICES: dict[str, ServiceConfig] = {
         engine_dimension   = "DATABASE_ENGINE",
         engine_attr        = "databaseEngine",
         instance_detail_key= "",
+        cur_product_code   = "AmazonRedshift",
     ),
     "ec2": ServiceConfig(
         ce_service_name    = "Amazon Elastic Compute Cloud - Compute",
         engine_dimension   = "PLATFORM",
         engine_attr        = "platform",
         instance_detail_key= "EC2InstanceDetails",
+        cur_product_code   = "AmazonEC2",
     ),
 }
 
