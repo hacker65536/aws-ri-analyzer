@@ -168,6 +168,62 @@ cur-analyzer rds_instances --no-cache  # キャッシュを使わず毎回実行
 > **注意**: CUR のパーティション `month` はゼロ埋めなし（`'3'` / `'12'`）。
 > `-p month=03` と渡されても自動的に `'3'` に正規化する。
 
+### カスタムクエリの書き方
+
+任意の SQL ファイルを作成して `cur-analyzer` で実行できます。
+
+#### ファイルの置き場所
+
+| 場所 | `--list` への表示 | 用途 |
+|---|---|---|
+| `queries/*.sql` | `[カスタムクエリ]` として表示 | 繰り返し使うアドホック分析 |
+| 任意の `.sql` ファイル | 表示されない | 一時的な調査など |
+
+`queries/templates/` 配下は組み込みテンプレートの置き場所。ユーザーが作成するカスタムクエリは `queries/` 直下に置くことを推奨。
+
+#### テンプレート変数
+
+SQL 内で `{{ 変数名 }}` と書くと `-p` で渡した値に置換されます。
+
+```sql
+-- my_query.sql の先頭コメントが --list の説明として使われる
+SELECT *
+FROM {{ database }}.{{ table }}
+WHERE year  = '{{ year }}'
+  AND month = '{{ month }}'
+  AND line_item_usage_start_date >= TIMESTAMP '{{ start_date }} 00:00:00'
+  AND line_item_usage_start_date <  TIMESTAMP '{{ end_date }} 00:00:00'
+  AND line_item_resource_id = '{{ resource_id }}'
+```
+
+#### 自動注入される変数
+
+以下の変数は `-p` で指定しなくても config.yaml と CE 期間から自動的に設定されます（`-p` で上書き可）。
+
+| 変数 | 自動値 | 説明 |
+|---|---|---|
+| `database` | `athena.database`（config.yaml） | CUR テーブルの Glue データベース名 |
+| `table` | `athena.table`（config.yaml） | CUR テーブル名 |
+| `year` | CE 期間の年（lookback_days から計算） | CUR パーティションの年 |
+| `month` | CE 期間の月（lookback_days から計算） | CUR パーティションの月（ゼロ埋めなし） |
+| `start_date` | CE period start（YYYY-MM-DD） | 日付フィルタの開始日 |
+| `end_date` | CE period end（YYYY-MM-DD） | 日付フィルタの終了日 |
+
+> `year` / `month` を明示指定する場合は **両方** 指定してください。片方だけはエラーになります。
+
+#### 実行例
+
+```bash
+# queries/ 直下に置いたカスタムクエリ（--list にも表示される）
+cur-analyzer queries/my_query.sql -p resource_id=my-db-instance
+
+# 任意の場所の SQL ファイル
+cur-analyzer /tmp/check.sql -p year=2026 -p month=3
+
+# 自動注入変数を上書きして別テーブルを参照する
+cur-analyzer queries/my_query.sql -p database=other_db -p table=other_table
+```
+
 #### CUR vs CE カバレッジ検証（`compare_cur_ce.py`）
 
 CUR（Athena）と CE API のカバレッジ数値を突き合わせて精度を検証するスクリプト。
