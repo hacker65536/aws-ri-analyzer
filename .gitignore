@@ -5,6 +5,9 @@ config.yaml
 HANDOFF.md
 CLAUDE.md
 
+# Local analysis notes (sensitive data, never commit)
+notes/
+
 # Python
 __pycache__/
 *.py[cod]
