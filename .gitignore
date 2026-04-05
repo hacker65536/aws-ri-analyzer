@@ -8,6 +8,9 @@ CLAUDE.md
 # Local analysis notes (sensitive data, never commit)
 notes/
 
+# Experimental queries (prefix _ to keep local)
+queries/_*.sql
+
 # Python
 __pycache__/
 *.py[cod]
