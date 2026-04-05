@@ -25,9 +25,10 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date as _date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,18 @@ _QUERIES_DIR = Path(__file__).parent / "queries"
 
 # デフォルト設定
 _DEFAULT_HEAD = 100
+
+# タイムゾーンエイリアス（略称 → IANA 名）
+_TZ_ALIASES: dict[str, str] = {
+    "JST": "Asia/Tokyo",
+    "KST": "Asia/Seoul",
+    "CST": "Asia/Shanghai",
+    "IST": "Asia/Kolkata",
+    "CET": "Europe/Berlin",
+    "EST": "America/New_York",
+    "PST": "America/Los_Angeles",
+    "UTC": "UTC",
+}
 _DEFAULT_LIMIT_MB = 10.0
 _MAX_CELL = 40
 
@@ -178,6 +191,70 @@ def parse_params(param_list: list[str]) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# タイムゾーン処理
+# ---------------------------------------------------------------------------
+
+def apply_tz_params(params: dict[str, str], tz_name: str) -> dict[str, str]:
+    """start_date / end_date をローカル日付として UTC に変換し、
+    テンプレート変数 partition_cond / start_date_utc / end_date_utc を注入する。
+
+    Parameters
+    ----------
+    params  : テンプレート変数辞書（start_date / end_date が必要）
+    tz_name : タイムゾーン名（IANA 形式 or エイリアス。例: JST, Asia/Tokyo）
+
+    Returns
+    -------
+    更新された params（元の辞書は変更しない）
+
+    Raises
+    ------
+    ValueError : tz_name が不正、または start_date / end_date が未指定の場合
+    """
+    iana = _TZ_ALIASES.get(tz_name.upper(), tz_name)
+    try:
+        tz = ZoneInfo(iana)
+    except ZoneInfoNotFoundError:
+        raise ValueError(
+            f"タイムゾーン '{tz_name}' が見つかりません。\n"
+            f"IANA 形式（例: Asia/Tokyo）またはエイリアス（JST, UTC など）で指定してください。"
+        )
+
+    start_str = params.get("start_date")
+    end_str   = params.get("end_date")
+    if not start_str or not end_str:
+        raise ValueError(
+            "--tz を使用する場合は -p start_date=YYYY-MM-DD と -p end_date=YYYY-MM-DD が必要です。"
+        )
+
+    # ローカル 00:00:00 / 23:59:59 → UTC
+    start_utc = datetime.fromisoformat(f"{start_str} 00:00:00").replace(tzinfo=tz).astimezone(timezone.utc)
+    end_utc   = datetime.fromisoformat(f"{end_str} 23:59:59").replace(tzinfo=tz).astimezone(timezone.utc)
+
+    # UTC 範囲に含まれる月を列挙してパーティション条件を生成
+    months: list[tuple[int, int]] = []
+    d = _date(start_utc.year, start_utc.month, 1)
+    end_month = _date(end_utc.year, end_utc.month, 1)
+    while d <= end_month:
+        months.append((d.year, d.month))
+        d = _date(d.year + (d.month // 12), d.month % 12 + 1, 1)
+
+    if len(months) == 1:
+        y, m = months[0]
+        partition_cond = f"year = '{y}' AND month = '{m}'"
+    else:
+        parts = [f"(year = '{y}' AND month = '{m}')" for y, m in months]
+        partition_cond = "(\n    " + "\n    OR ".join(parts) + "\n  )"
+
+    return {
+        **params,
+        "partition_cond": partition_cond,
+        "start_date_utc": start_utc.strftime("%Y-%m-%d %H:%M:%S"),
+        "end_date_utc":   end_utc.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 表示
 # ---------------------------------------------------------------------------
 
@@ -284,6 +361,11 @@ def main() -> None:
         help="CSV ダウンロード先（省略時: ~/.cache/ri-analyzer/query_results/）",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Athena に送信する前のレンダリング済み SQL を表示して終了（実行しない）",
+    )
+    parser.add_argument(
         "--no-cache",
         action="store_true",
         help="キャッシュを使わず毎回 Athena に問い合わせる",
@@ -309,6 +391,16 @@ def main() -> None:
         choices=["table", "csv", "json"],
         default="table",
         help="出力フォーマット（デフォルト: table）",
+    )
+    parser.add_argument(
+        "--tz",
+        default=None,
+        metavar="TZ",
+        help=(
+            "タイムゾーン（JST, UTC, Asia/Tokyo など）。"
+            "-p start_date / end_date と併用すると UTC 変換・パーティション条件を自動生成し "
+            "{{ partition_cond }} / {{ start_date_utc }} / {{ end_date_utc }} を注入する。"
+        ),
     )
     parser.add_argument(
         "--verbose",
@@ -385,18 +477,48 @@ def main() -> None:
         info(f"[ERROR] {e}")
         sys.exit(1)
 
-    # year / month が未指定なら CE 期間（lookback_days）から自動導出
-    if "year" not in base_params and "month" not in base_params:
-        months = ce_period_months(cfg.analysis.lookback_days)
+    # --tz: start_date / end_date をローカル時刻として UTC 変換し partition_cond を注入
+    if args.tz:
+        try:
+            base_params = apply_tz_params(base_params, args.tz)
+            info(f"[INFO] タイムゾーン : {args.tz}")
+            info(f"[INFO] UTC 範囲    : {base_params['start_date_utc']} 〜 {base_params['end_date_utc']}")
+            info(f"[INFO] パーティション: {base_params['partition_cond']}")
+        except ValueError as e:
+            info(f"[ERROR] {e}")
+            sys.exit(1)
+
+    # --tz 使用時は partition_cond が注入済みのため year/month ループは不要（1回だけ実行）
+    # それ以外は year / month が未指定なら CE 期間（lookback_days）から自動導出
+    if args.tz:
+        run_iterations: List[Tuple[dict, str]] = [(base_params, base_params["start_date"])]
+    elif "year" not in base_params and "month" not in base_params:
+        ym_list = ce_period_months(cfg.analysis.lookback_days)
         info(f"[INFO] CE 期間     : lookback={cfg.analysis.lookback_days}d → "
-             f"{months[0][0]}-{months[0][1]:02d} 〜 {months[-1][0]}-{months[-1][1]:02d} "
+             f"{ym_list[0][0]}-{ym_list[0][1]:02d} 〜 {ym_list[-1][0]}-{ym_list[-1][1]:02d} "
              f"({ce_start} 〜 {ce_end})")
+        run_iterations = [
+            ({**base_params, "year": str(y), "month": str(m)}, f"{y}-{m:02d}")
+            for y, m in ym_list
+        ]
     else:
-        # 両方指定されていない場合はエラー
         if "year" not in base_params or "month" not in base_params:
             info("[ERROR] -p year=YYYY と -p month=M は両方指定してください")
             sys.exit(1)
-        months = [(int(base_params["year"]), int(base_params["month"]))]
+        y, m = int(base_params["year"]), int(base_params["month"])
+        run_iterations = [({**base_params}, f"{y}-{m:02d}")]
+
+    # --dry-run: レンダリング済み SQL を表示して終了
+    if args.dry_run:
+        for params, label in run_iterations:
+            try:
+                sql = render_template(sql_raw, params)
+            except ValueError as e:
+                info(f"[ERROR] {e}")
+                sys.exit(1)
+            print(f"-- ========== {label} ==========")
+            print(sql)
+        return
 
     use_cache = not args.no_cache
     client = AthenaClient(cfg.athena, payer_profile=cfg.payer.profile)
@@ -408,9 +530,7 @@ def main() -> None:
 
     all_rows: List[dict] = []
 
-    for year, month in months:
-        params = {**base_params, "year": str(year), "month": str(month)}
-
+    for params, label in run_iterations:
         try:
             sql = render_template(sql_raw, params)
         except ValueError as e:
@@ -428,7 +548,7 @@ def main() -> None:
                     p.unlink()
                     info(f"[INFO] キャッシュ削除: {p}")
 
-        info(f"[INFO] 実行中      : {year}-{month:02d} ...")
+        info(f"[INFO] 実行中      : {label} ...")
 
         tmp_path = _write_rendered_sql(sql)
         try:
@@ -449,7 +569,7 @@ def main() -> None:
         # 結果メタ情報
         cache_label = " [CACHE HIT]" if result.from_cache else ""
         info(f"{'─' * 60}")
-        info(f"  {year}-{month:02d}{cache_label}")
+        info(f"  {label}{cache_label}")
         if result.s3_path:
             info(f"  Query ID  : {result.query_id}")
         if result.size_bytes:
