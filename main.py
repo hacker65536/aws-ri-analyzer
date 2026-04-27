@@ -287,6 +287,13 @@ def main() -> None:
 
     print(f"  Payer profile : {payer_profile}")
 
+    import boto3
+    from ri_analyzer.pricing import AwsPricingClient
+    pricing_client = AwsPricingClient(
+        session=boto3.Session(profile_name=payer_profile),
+        cache=cache,
+    )
+
     for svc in services:
         start, end = _ce_time_period(cfg.analysis.lookback_days)
         if not use_json:
@@ -371,6 +378,8 @@ def main() -> None:
                     engines=args.engine,
                     families=args.family,
                     use_family_summary=svc_cfg.has_nu_flexibility,
+                    pricing_client=pricing_client,
+                    service=svc,
                 )
 
         if "utilization" in sections:

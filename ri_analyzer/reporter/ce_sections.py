@@ -118,6 +118,8 @@ def print_coverage(
     engines: list[str] | None = None,
     families: list[str] | None = None,
     use_family_summary: bool = True,
+    pricing_client=None,   # AwsPricingClient | None
+    service: str = "rds",
 ) -> None:
     title = "RI Coverage  (reserved vs on-demand hours)"
     if max_coverage is not None:
@@ -140,11 +142,33 @@ def print_coverage(
         print("\n  No data.")
         return
 
-    col_header = (
-        f"\n  {'Account ID':<14}  {'Instance Type':<24}  {'Region':<16}"
-        f"  {'Coverage':>9}  {'RI (hrs)':>9}  {'OD (hrs)':>9}  {'Total (hrs)':>12}"
-    )
-    col_sep = f"  {'-' * 103}"
+    show_cost = pricing_client is not None
+    if show_cost:
+        col_header = (
+            f"\n  {'Account ID':<14}  {'Instance Type':<24}  {'Region':<16}"
+            f"  {'Coverage':>9}  {'RI (hrs)':>9}  {'OD (hrs)':>9}  {'Total (hrs)':>12}  {'OD Cost ($)':>12}"
+        )
+        col_sep = f"  {'-' * 118}"
+    else:
+        col_header = (
+            f"\n  {'Account ID':<14}  {'Instance Type':<24}  {'Region':<16}"
+            f"  {'Coverage':>9}  {'RI (hrs)':>9}  {'OD (hrs)':>9}  {'Total (hrs)':>12}"
+        )
+        col_sep = f"  {'-' * 103}"
+
+    def _od_cost_str(s: CoverageSummary) -> str:
+        if not show_cost or s.on_demand_hours == 0:
+            return f"  {'':>12}" if show_cost else ""
+        price = pricing_client.get_od_price(
+            service=service,
+            instance_type=s.instance_type,
+            region=s.region,
+            engine=s.platform,
+        )
+        if price is None:
+            return f"  {'N/A':>12}"
+        cost = s.on_demand_hours * price
+        return f"  {cost:>12.2f}"
 
     # platform ごとにグループ化（出現順を保持しつつ重複排除）
     platforms: list[str] = []
@@ -188,6 +212,7 @@ def print_coverage(
                     print(
                         f"  {s.account_id:<14}  {s.instance_type:<24}  {s.region:<16}"
                         f"  {pct_str}  {s.covered_hours:>9.1f}  {s.on_demand_hours:>9.1f}  {s.total_hours:>10.1f}"
+                        f"{_od_cost_str(s)}"
                     )
 
                 # family サマリ行（2件以上の場合のみ）
@@ -223,6 +248,7 @@ def print_coverage(
                 print(
                     f"  {s.account_id:<14}  {s.instance_type:<24}  {s.region:<16}"
                     f"  {pct_str}  {s.covered_hours:>9.1f}  {s.on_demand_hours:>9.1f}  {s.total_hours:>10.1f}"
+                    f"{_od_cost_str(s)}"
                 )
 
     # フッター統計
