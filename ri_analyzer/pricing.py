@@ -211,6 +211,62 @@ def _extract_od_price(price_str: str) -> float | None:
 
 
 # ──────────────────────────────────────────────
+# Multi-AZ 判定
+# ──────────────────────────────────────────────
+
+def annotate_multi_az(
+    subscriptions: list,
+    pricing_client: AwsPricingClient,
+    service: str = "rds",
+    tolerance: float = 0.05,
+) -> None:
+    """CE の averageOnDemandHourlyRate を Pricing API と比較して Multi-AZ を判定し、
+    subscription.multi_az に結果を書き込む（in-place 更新）。
+
+    検出方法:
+        CE GetReservationUtilization の averageOnDemandHourlyRate 属性（CE が
+        内部的に使用する現在のオンデマンド単価）を、AWS Pricing API から取得した
+        Single-AZ / Multi-AZ のオンデマンド単価と比較することで Multi-AZ かどうかを判定する。
+        tolerance（デフォルト 5%）の範囲内で一致した方を採用する。
+
+    制約:
+        - Aurora の RI は常に Single-AZ のためスキップ（multi_az = None のまま）
+        - avg_od_rate が 0 の場合は判定不能（multi_az = None のまま）
+        - 価格変動・IO 最適化インスタンスなどで稀に誤判定する可能性がある
+    """
+    if service != "rds":
+        return
+    for sub in subscriptions:
+        # Aurora の RI は常に Single-AZ（Multi-AZ には対応していない）
+        if sub.platform.lower().startswith("aurora"):
+            continue
+        if sub.avg_od_rate <= 0:
+            continue
+
+        single_price = pricing_client.get_od_price(
+            service=service,
+            instance_type=sub.instance_type,
+            region=sub.region,
+            engine=sub.platform,
+            deployment="Single-AZ",
+        )
+        multi_price = pricing_client.get_od_price(
+            service=service,
+            instance_type=sub.instance_type,
+            region=sub.region,
+            engine=sub.platform,
+            deployment="Multi-AZ",
+        )
+
+        rate = sub.avg_od_rate
+        if multi_price is not None and abs(rate - multi_price) / multi_price <= tolerance:
+            sub.multi_az = True
+        elif single_price is not None and abs(rate - single_price) / single_price <= tolerance:
+            sub.multi_az = False
+        # else: multi_az remains None (価格が取得できなかった、または誤差が大きい)
+
+
+# ──────────────────────────────────────────────
 # 単体 CLI
 # ──────────────────────────────────────────────
 

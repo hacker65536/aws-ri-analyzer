@@ -439,4 +439,5 @@ def _parse_subscription(sub_id: str, attrs: dict[str, Any]) -> RiSubscription:
         status           = attrs.get("subscriptionStatus", ""),
         size_flexibility = attrs.get("sizeFlexibility", ""),
         offering_type    = attrs.get("subscriptionType", attrs.get("offeringType", "")),
+        avg_od_rate      = float(attrs.get("averageOnDemandHourlyRate") or 0.0),
     )

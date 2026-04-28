@@ -31,6 +31,8 @@ from ri_analyzer.fetchers.cost_explorer import fetch_ri_subscriptions, fetch_ri_
 from ri_analyzer.analyzers import expiration as exp_analyzer
 from ri_analyzer.analyzers import coverage as cov_analyzer
 from ri_analyzer.analyzers import utilization as util_analyzer
+from ri_analyzer.analyzers.utilization import _parse_instance_family
+from ri_analyzer.reporter.ce_sections import _normalize_util_platform
 from ri_analyzer.analyzers.cur_detail import (
     parse_rds_instances, parse_elasticache_nodes, parse_opensearch_domains,
     parse_rds_instance_detail, parse_elasticache_node_detail, parse_opensearch_domain_detail,
@@ -187,6 +189,8 @@ def main() -> None:
         logger.error("Failed to load config: %s", e)
         sys.exit(1)
 
+    reporter.set_display_timezone(cfg.analysis.display_timezone)
+
     # ── Resolve services ──────────────────────────────────────────
     # Priority: CLI --service > config.yaml services > interactive prompt
     config_dirty = False
@@ -259,7 +263,7 @@ def main() -> None:
     json_results: dict = {}  # --output json 時に収集する
 
     if not use_json:
-        print(f"\nAWS RI Analyzer  [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
+        print(f"\nAWS RI Analyzer  [{reporter.to_display_tz(datetime.now(timezone.utc)).strftime('%Y-%m-%d %H:%M:%S')}]")
         print(f"  Config        : {cfg._path}")
         print(f"  Payer account : {cfg.payer.account_id}")
         print(f"  Services      : {', '.join(services)}")
@@ -288,7 +292,7 @@ def main() -> None:
     print(f"  Payer profile : {payer_profile}")
 
     import boto3
-    from ri_analyzer.pricing import AwsPricingClient
+    from ri_analyzer.pricing import AwsPricingClient, annotate_multi_az
     pricing_client = AwsPricingClient(
         session=boto3.Session(profile_name=payer_profile),
         cache=cache,
@@ -325,6 +329,10 @@ def main() -> None:
             cache.set(sub_key, (subscriptions, util_records))
             print(f" {len(subscriptions)} subscription(s)")
 
+        # Derive Multi-AZ for RDS using Pricing API comparison (runs every time; Pricing API is cached)
+        if svc == "rds":
+            annotate_multi_az(subscriptions, pricing_client)
+
         # Fetch coverage from CE (payer account)
         # TODO: For per-instance detail, query CUR via Athena (plan B)
         coverage_records = []
@@ -351,8 +359,14 @@ def main() -> None:
                 print(f" {len(coverage_records)} record(s)")
 
         if "expiration" in sections:
+            exp_subs = subscriptions
+            if args.engine:
+                engines_lower = [e.lower() for e in args.engine]
+                exp_subs = [s for s in exp_subs if any(e in _normalize_util_platform(s.platform) for e in engines_lower)]
+            if args.family:
+                exp_subs = [s for s in exp_subs if _parse_instance_family(s.instance_type) in args.family]
             expired, warning, ok = exp_analyzer.analyze(
-                subscriptions, warn_days=cfg.analysis.expiration_warn_days
+                exp_subs, warn_days=cfg.analysis.expiration_warn_days
             )
             if use_json:
                 json_results[svc]["expiration"] = {
@@ -362,7 +376,10 @@ def main() -> None:
                 }
             else:
                 reporter.print_expiration(
-                    expired, warning, ok, warn_days=cfg.analysis.expiration_warn_days
+                    expired, warning, ok,
+                    warn_days=cfg.analysis.expiration_warn_days,
+                    engines=args.engine,
+                    families=args.family,
                 )
 
         svc_cfg = get_service(svc)

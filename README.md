@@ -89,6 +89,9 @@ ri-analyzer --section coverage --max-coverage 90
 ri-analyzer --section coverage --engine aurora
 ri-analyzer --section coverage --engine aurora mysql --family r6g r8g
 
+# 有効期限を特定エンジン・ファミリーに絞って表示（engine/family フィルタは expiration にも有効）
+ri-analyzer --section expiration --engine "aurora mysql" --family r6g
+
 # キャッシュを無視して AWS から再取得
 ri-analyzer --no-cache
 
@@ -136,8 +139,8 @@ ri-analyzer --service rds --section recommendations --athena
 | `--section SECTION [...]` | 表示セクション（後述）複数指定可 |
 | `--max-util PCT` | 利用率が PCT% 以下のサブスクリプションのみ表示 |
 | `--max-coverage PCT` | カバレッジが PCT% 以下のグループのみ表示 |
-| `--engine ENGINE [...]` | エンジンで絞り込み（部分一致・大文字小文字無視）|
-| `--family FAMILY [...]` | インスタンスファミリーで絞り込み（例: r6g t4g）|
+| `--engine ENGINE [...]` | エンジンで絞り込み（部分一致・大文字小文字無視）。`expiration` / `coverage` / `utilization` / `recommendations` に適用 |
+| `--family FAMILY [...]` | インスタンスファミリーで絞り込み（例: r6g t4g）。`expiration` / `coverage` / `utilization` / `recommendations` に適用 |
 | `--split-engine` | Redis と Valkey をカバレッジ表示で別グループに分ける |
 | `--show-sub-id` | Utilization テーブルに Subscription ID 列を表示 |
 | `--no-color` | カラー出力を無効化 |
@@ -154,7 +157,7 @@ ri-analyzer --service rds --section recommendations --athena
 
 | セクション | データソース | 内容 |
 |---|---|---|
-| `expiration` | CE API | RI 有効期限チェック |
+| `expiration` | CE API | RI 有効期限チェック（正規化ユニット数・エンジン・ファミリーフィルタ対応）|
 | `coverage` | CE API | RI カバレッジ率 |
 | `utilization` | CE API | RI 利用率・未使用時間 |
 | `recommendations` | CE API | RI 購入推奨 |

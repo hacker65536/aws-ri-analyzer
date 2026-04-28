@@ -6,8 +6,9 @@ boto3 に依存せずにデータ型を使えるようにする。
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Optional
 
 
 @dataclass
@@ -28,6 +29,14 @@ class RiSubscription:
     status: str             # Active / Expired
     size_flexibility: str   # FlexRI / "" など
     offering_type: str      # All Upfront / Partial Upfront / No Upfront
+
+    # CE averageOnDemandHourlyRate — CE が内部的に使用する現在のオンデマンド単価。
+    # Pricing API と比較することで Multi-AZ かどうかを判定するために使う。キャッシュに含める。
+    avg_od_rate: float = 0.0
+
+    # Multi-AZ 判定結果。avg_od_rate と Pricing API 単価の比較で実行時に設定される。
+    # キャッシュには保存しない（毎回 annotate_multi_az() で再計算）。
+    multi_az: Optional[bool] = None
 
     @property
     def days_remaining(self) -> int:

@@ -37,6 +37,10 @@ analysis:
   # Use --no-cache flag to bypass cache and force fresh data.
   cache_ttl_hours: 24
 
+  # Timezone for date/time display (IANA timezone name).
+  # If omitted, the OS local timezone is used.
+  # display_timezone: "Asia/Tokyo"
+
 athena:
   # Glue database name where CUR is registered.
   database: athenacurcfn_aws_cost_report

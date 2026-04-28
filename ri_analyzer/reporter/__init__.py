@@ -4,7 +4,7 @@
 外部からは `from ri_analyzer import reporter; reporter.print_coverage(...)` で使用できる。
 """
 
-from ri_analyzer.reporter._base import set_color  # noqa: F401
+from ri_analyzer.reporter._base import set_color, set_display_timezone, to_display_tz  # noqa: F401
 from ri_analyzer.reporter.ce_sections import (     # noqa: F401
     print_expiration,
     print_coverage,

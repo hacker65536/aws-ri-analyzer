@@ -11,7 +11,7 @@ from ri_analyzer.analyzers.utilization import (
     _norm_factor_for_engine,
 )
 from ri_analyzer.fetchers.cost_explorer import RiRecommendationGroup
-from ri_analyzer.reporter._base import _RED, _YELLOW, _GREEN, _CYAN, _BOLD, _c, _header
+from ri_analyzer.reporter._base import _RED, _YELLOW, _GREEN, _CYAN, _BOLD, _c, _header, to_display_tz
 
 
 # ──────────────────────────────────────────────
@@ -68,41 +68,66 @@ def print_expiration(
     warning: list[ExpirationResult],
     ok:      list[ExpirationResult],
     warn_days: int,
+    engines: list[str] | None = None,
+    families: list[str] | None = None,
 ) -> None:
-    _header(f"RI Expiration  (warn threshold: {warn_days} days)")
+    title = f"RI Expiration  (warn threshold: {warn_days} days)"
+    if engines:
+        title += f"  [engine: {', '.join(engines)}]"
+    if families:
+        title += f"  [family: {', '.join(families)}]"
+    _header(title)
+
+    col_header = (
+        f"       {'Instance Type':<20}"
+        f"  {'Cnt':<4}  {'NUs':>7}      "
+        f"{'Platform':<24}  {'Region':<20}"
+        f"  {'Expires':<19}  Remaining"
+    )
+    col_sep = f"  {'-' * 115}"
+
+    def _row(marker: str, r: ExpirationResult) -> str:
+        ri = r.ri
+        # Multi-AZ DB instance の NU は Single-AZ の 2 倍（primary + standby の 2 台分）
+        # ref: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithReservedDBInstances.html
+        multi_az = getattr(ri, "multi_az", None)
+        az_factor = 2 if multi_az is True else 1
+        nus = ri.count * _norm_factor_for_engine(ri.instance_type, ri.platform) * az_factor
+        tail = (
+            f"({abs(r.days_remaining)} days ago)"
+            if r.days_remaining < 0
+            else f"({r.days_remaining} days left)"
+        )
+        plat = _abbrev_platform(ri.platform)
+        if multi_az is True:
+            plat = f"{plat} (M-AZ)"
+        return (
+            f"    {marker}  {ri.instance_class:<20} x{ri.count:<4d}"
+            f"  {nus:>7.1f} NUs"
+            f"  {plat:<24}  {ri.region:<20}"
+            f"  {to_display_tz(ri.end_time).strftime('%Y-%m-%d')}           {tail}"
+        )
 
     if expired:
         print(_c(f"\n  [EXPIRED] {len(expired)} item(s)", _RED))
+        print(col_header)
+        print(col_sep)
         for r in expired:
-            ri = r.ri
-            print(
-                f"    {_c('x', _RED)}  {ri.instance_class:<20} x{ri.count:<4d}"
-                f"  {ri.engine:<20}  {ri.region:<20}"
-                f"  expires: {ri.end_time.strftime('%Y-%m-%d')}"
-                f"  ({abs(r.days_remaining)} days ago)"
-            )
+            print(_row(_c('x', _RED), r))
 
     if warning:
         print(_c(f"\n  [WARNING] {len(warning)} item(s) expiring within {warn_days} days", _YELLOW))
+        print(col_header)
+        print(col_sep)
         for r in warning:
-            ri = r.ri
-            print(
-                f"    {_c('!', _YELLOW)}  {ri.instance_class:<20} x{ri.count:<4d}"
-                f"  {ri.engine:<20}  {ri.region:<20}"
-                f"  expires: {ri.end_time.strftime('%Y-%m-%d')}"
-                f"  ({r.days_remaining} days left)"
-            )
+            print(_row(_c('!', _YELLOW), r))
 
     if ok:
         print(_c(f"\n  [OK] {len(ok)} item(s)", _GREEN))
+        print(col_header)
+        print(col_sep)
         for r in ok:
-            ri = r.ri
-            print(
-                f"    {_c('v', _GREEN)}  {ri.instance_class:<20} x{ri.count:<4d}"
-                f"  {ri.engine:<20}  {ri.region:<20}"
-                f"  expires: {ri.end_time.strftime('%Y-%m-%d')}"
-                f"  ({r.days_remaining} days left)"
-            )
+            print(_row(_c('v', _GREEN), r))
 
     if not (expired or warning or ok):
         print("\n  No active RIs found.")

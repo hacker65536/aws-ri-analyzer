@@ -16,7 +16,7 @@ _DEFAULT_CACHE_DIR = Path.home() / ".cache" / "ri-analyzer"
 
 # データ構造が変わったときにインクリメントする。
 # 古いキャッシュファイルはハッシュが変わるため自動的に無視される。
-_CACHE_VERSION = "3"
+_CACHE_VERSION = "4"
 
 
 class CacheStore:

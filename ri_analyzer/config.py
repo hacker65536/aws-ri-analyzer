@@ -45,6 +45,7 @@ class AnalysisConfig:
     lookback_days: int = 7
     expiration_warn_days: int = 90
     cache_ttl_hours: float = 24.0
+    display_timezone: Optional[str] = None  # IANA TZ name e.g. "Asia/Tokyo". None = OS local TZ
 
 
 @dataclass
@@ -102,6 +103,7 @@ class Config:
                 lookback_days=analysis_raw.get("lookback_days", 7),
                 expiration_warn_days=analysis_raw.get("expiration_warn_days", 90),
                 cache_ttl_hours=float(analysis_raw.get("cache_ttl_hours", 24.0)),
+                display_timezone=analysis_raw.get("display_timezone") or None,
             ),
             recommendation=RecommendationConfig(
                 term=rec_raw.get("term", "ONE_YEAR"),
@@ -127,6 +129,8 @@ class Config:
                 "lookback_days": self.analysis.lookback_days,
                 "expiration_warn_days": self.analysis.expiration_warn_days,
                 "cache_ttl_hours": self.analysis.cache_ttl_hours,
+                **( {"display_timezone": self.analysis.display_timezone}
+                    if self.analysis.display_timezone else {} ),
             },
             "recommendation": {
                 "term": self.recommendation.term,
