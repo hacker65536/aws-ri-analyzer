@@ -27,6 +27,14 @@ from ri_analyzer.fetchers.ce_models import (  # noqa: F401  (re-export for backw
 from ri_analyzer.service_registry import get_service
 
 
+def _to_float(value: Any, default: float = 0.0) -> float:
+    """CE が数値フィールドに返す 'NA' / '' / None を default に倒して float 化する。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _ce_time_period(lookback_days: int) -> tuple[str, str]:
     """
     CE クエリ用の (start, end) 日付文字列を返す。
@@ -394,21 +402,21 @@ def fetch_ri_recommendations(
                     instance_type             = itype,
                     region                    = region,
                     platform                  = platform,
-                    count                     = int(float(d.get("RecommendedNumberOfInstancesToPurchase", 0))),
-                    normalized_units          = float(d.get("RecommendedNormalizedUnitsToPurchase", 0)),
-                    upfront_cost              = float(d.get("UpfrontCost", 0)),
-                    estimated_monthly_savings = float(d.get("EstimatedMonthlySavingsAmount", 0)),
-                    estimated_savings_pct     = float(d.get("EstimatedMonthlySavingsPercentage", 0)),
-                    breakeven_months          = float(d.get("EstimatedBreakEvenInMonths", 0)),
-                    avg_utilization           = float(d.get("AverageUtilization", 0)),
+                    count                     = int(_to_float(d.get("RecommendedNumberOfInstancesToPurchase", 0))),
+                    normalized_units          = _to_float(d.get("RecommendedNormalizedUnitsToPurchase", 0)),
+                    upfront_cost              = _to_float(d.get("UpfrontCost", 0)),
+                    estimated_monthly_savings = _to_float(d.get("EstimatedMonthlySavingsAmount", 0)),
+                    estimated_savings_pct     = _to_float(d.get("EstimatedMonthlySavingsPercentage", 0)),
+                    breakeven_months          = _to_float(d.get("EstimatedBreakEvenInMonths", 0)),
+                    avg_utilization           = _to_float(d.get("AverageUtilization", 0)),
                 ))
             groups.append(RiRecommendationGroup(
                 service               = service,
                 term                  = rec.get("Term", term),
                 payment_option        = rec.get("PaymentOption", payment_option),
                 details               = details,
-                total_monthly_savings = float(summary.get("TotalEstimatedMonthlySavingsAmount", 0)),
-                total_savings_pct     = float(summary.get("TotalEstimatedMonthlySavingsPercentage", 0)),
+                total_monthly_savings = _to_float(summary.get("TotalEstimatedMonthlySavingsAmount", 0)),
+                total_savings_pct     = _to_float(summary.get("TotalEstimatedMonthlySavingsPercentage", 0)),
                 currency              = summary.get("CurrencyCode", "USD"),
             ))
 
